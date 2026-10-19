@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Added
+- 대시보드 **Changes 탭**과 `emu diff` — 코드 변경을 네 범위로 본다: 커밋 안 한 변경(`head`),
+  기준 브랜치 이후(`base`, 기본 develop/development/main/master, upstream 우선), 마지막 reload가
+  반영한 변경(`reload`), 아직 reload 안 된 변경(`pending`). 서버가 기동·hot reload/restart 때마다
+  임시 인덱스로 작업 트리(새 파일 포함)를 스냅샷해 두므로 reload 범위가 가능하고, 실제
+  인덱스·파일·stash는 건드리지 않는다. 생성·vendor·lock 파일은 기본 숨김. reload 후 대시보드가
+  저절로 갱신된다. 서버가 프로젝트를 감시해(build·.dart_tool·.git 등 제외, 0.4초 디바운스) 파일을
+  저장만 해도 실시간으로 반영된다. 서버 API `GET /api/diff/files`, `GET /api/diff/file`.
+
 ## [0.10.0] - 2026-10-16
 
 ### Added
