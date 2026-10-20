@@ -19,6 +19,10 @@ import 'dart:math';
 
 import 'package:shelf/shelf.dart';
 
+/// `Request.context` key: whether the request carried the session token —
+/// routes open without it (`GET /api/status`) answer less to those that didn't.
+const authedContextKey = 'emu.authed';
+
 /// Header the CLI and dashboard send the session token in.
 const tokenHeader = 'x-emu-token';
 
@@ -77,12 +81,12 @@ Middleware apiGuard(String token) => (Handler inner) => (Request req) {
         return _refuse(403, 'cross-origin request refused (origin ${req.headers['origin']})');
       }
       final path = '/${req.url.path}';
-      if (needsToken(req.method, path) &&
-          !tokenMatches(req.headers[tokenHeader] ?? req.url.queryParameters['token'], token)) {
+      final authed = tokenMatches(req.headers[tokenHeader] ?? req.url.queryParameters['token'], token);
+      if (needsToken(req.method, path) && !authed) {
         return _refuse(401,
             'missing or wrong session token — the CLI reads it from .emu/server.json; reload the dashboard after `emu up`');
       }
-      return inner(req);
+      return inner(req.change(context: {authedContextKey: authed}));
     };
 
 Response _refuse(int status, String error) =>

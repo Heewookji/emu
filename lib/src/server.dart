@@ -562,6 +562,12 @@ class EmuServer {
   Future<Response> _api(Request req, String path) async {
     switch (path) {
       case '/api/status':
+        // Without the token, only that the server is up (the device-lease
+        // liveness ping): the full status holds the VM Service URI, whose
+        // auth code is what lets a client run code in the app.
+        if (req.context[authedContextKey] != true) {
+          return _json({'ok': true, 'state': engine.status.state.name, 'serverPort': port});
+        }
         final missing = _portsMissing;
         return _json({
           'status': engine.status.toJson(),

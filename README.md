@@ -742,7 +742,8 @@ to its starting state is the leak signal this is built to catch.
   from this session's dashboard and CLI alone: every server start creates a token,
   written to `.emu/server.json` (for the CLI) and into the dashboard page. A request
   without it, from another site (`Origin`), or under another host name (DNS
-  rebinding) is refused; `GET /api/status`, the liveness ping, is the one exception.
+  rebinding) is refused; `GET /api/status`, the liveness ping, is the one exception —
+  without the token it answers only that the server is up, not the VM Service URI.
   A dashboard tab left open across `emu down`/`up` reloads itself to pick up the new
   token. To call the API yourself:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
@@ -814,7 +815,8 @@ pages:
   `{{input.<field>}}` — a form's field, in that form's buttons.
   They work only in `[program, arg, …]` commands, and each value stays inside its own
   argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
-  is never run. A shell-string command with a placeholder is a config error.
+  is never run. A shell-string command with a placeholder is a config error, and so is one
+  in the program (the first element): a value may say what a command is given, not what runs.
 - Chip colors follow common state words (`on`/`off`, `changed`, `error` …); any other value
   is neutral.
 - An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`

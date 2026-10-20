@@ -70,6 +70,18 @@ void main() {
       expect((await _send('POST', '/api/status')).statusCode, 401);
     });
 
+    test('routes learn whether the token came, to answer less without it', () async {
+      final handler = const Pipeline()
+          .addMiddleware(apiGuard(_token))
+          .addHandler((req) => Response.ok('${req.context[authedContextKey]}'));
+      Future<String> seen(String path, [Map<String, String> headers = const {}]) async =>
+          (await handler(Request('GET', Uri.parse('http://127.0.0.1:4577$path'), headers: {'host': '127.0.0.1:4577', ...headers})))
+              .readAsString();
+      expect(await seen('/api/status'), 'false');
+      expect(await seen('/api/status', {tokenHeader: _token}), 'true');
+      expect(await seen('/api/status?token=$_token'), 'true');
+    });
+
     test('refusals are JSON the CLI can show', () async {
       final r = await _send('POST', '/api/reload');
       final body = jsonDecode(await r.readAsString()) as Map<String, dynamic>;
