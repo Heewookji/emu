@@ -38,6 +38,36 @@ const els = {
   urlOpen: document.getElementById('url-open'),
 };
 
+// ---- session token ----------------------------------------------------------
+// Every API call carries the session token the server wrote into index.html —
+// without it any web page could drive the app through 127.0.0.1. A tab left
+// open across `emu down`/`up` holds the old token: its calls get 401 and the
+// page reloads itself to pick up the new one.
+
+const TOKEN = document.querySelector('meta[name="emu-token"]')?.content || '';
+
+function api(path, opts = {}) {
+  return fetch(path, { ...opts, headers: { ...opts.headers, 'X-Emu-Token': TOKEN } }).then((r) => {
+    if (r.status === 401) sessionChanged();
+    return r;
+  });
+}
+
+// For URLs that can't carry a header (WebSocket, <img>).
+function withToken(url) {
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
+}
+
+// At most one reload per 10s, so a token that keeps failing can't loop.
+function sessionChanged() {
+  try {
+    const last = Number(sessionStorage.getItem('emu.reloadedAt')) || 0;
+    if (Date.now() - last < 10000) { toast('session token rejected — reload the page'); return; }
+    sessionStorage.setItem('emu.reloadedAt', String(Date.now()));
+  } catch (_) { /* storage blocked: reload anyway */ }
+  location.reload();
+}
+
 const LEVEL_RANK = { debug: 0, info: 1, system: 1, warn: 2, error: 3 };
 const TAG = { error: 'E', warn: 'W', debug: 'D', system: '•', info: 'I' };
 
@@ -137,11 +167,13 @@ function setStatus(s) {
 // ---- websocket --------------------------------------------------------------
 
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/api/stream`);
+  const ws = new WebSocket(withToken(`ws://${location.host}/api/stream`));
   ws.onopen = () => els.connDot.classList.add('on');
   ws.onclose = () => {
     els.connDot.classList.remove('on');
-    setTimeout(connect, 1000); // auto-reconnect
+    // A refused upgrade (new server, new token) closes like a dropped one;
+    // the session check reloads the page in that case (see api()).
+    api('/api/session').catch(() => {}).finally(() => setTimeout(connect, 1000)); // auto-reconnect
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
@@ -156,7 +188,7 @@ function connect() {
 async function action(path, label) {
   toast(`${label}…`);
   try {
-    const r = await fetch('/api/' + path, { method: 'POST' });
+    const r = await api('/api/' + path, { method: 'POST' });
     const j = await r.json();
     toast(`${label}: ${j.message || (j.ok ? 'ok' : 'failed')}`);
   } catch (e) {
@@ -183,7 +215,7 @@ function refreshShot(retries = 0) {
     hideLoading();
     els.screenEmpty.textContent = 'screen unavailable (app not running?)';
   };
-  img.src = `/api/screenshot?inline=1&t=${Date.now()}`;
+  img.src = withToken(`/api/screenshot?inline=1&t=${Date.now()}`);
 }
 
 // Loading placeholder: the emu mark blinking (web/loading.json, a Lottie
@@ -233,13 +265,13 @@ els.shotImg.addEventListener('pointerup', (e) => {
 
 async function tapAt(x, y) {
   toast(`tap ${x},${y}`);
-  try { await fetch(`/api/tap?x=${x}&y=${y}`, { method: 'POST' }); } catch (_) {}
+  try { await api(`/api/tap?x=${x}&y=${y}`, { method: 'POST' }); } catch (_) {}
   scheduleRefresh();
 }
 async function swipeAt(x1, y1, x2, y2) {
   toast(`swipe → ${x2},${y2}`);
   try {
-    await fetch(`/api/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`, { method: 'POST' });
+    await api(`/api/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`, { method: 'POST' });
   } catch (_) {}
   scheduleRefresh();
 }
@@ -248,7 +280,7 @@ async function sendText() {
   if (!t) return;
   toast('text →');
   try {
-    const r = await fetch(`/api/text?text=${encodeURIComponent(t)}`, { method: 'POST' });
+    const r = await api(`/api/text?text=${encodeURIComponent(t)}`, { method: 'POST' });
     const j = await r.json();
     toast(j.ok ? 'text sent' : `text: ${j.error || 'failed'}`);
   } catch (e) { toast(`text failed: ${e}`); }
@@ -288,7 +320,7 @@ async function openUrl() {
   els.urlOpen.disabled = true;
   toast(`open ${url}`);
   try {
-    const r = await fetch(`/api/open-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
+    const r = await api(`/api/open-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
     const j = await r.json();
     if (j.ok) rememberUrl(url);
     toast(j.ok ? `opened ${url}` : `open-url: ${j.error || 'failed'}`);
@@ -371,7 +403,7 @@ async function loadDiffFiles() {
   diffEls.base.hidden = diffEls.scope.value !== 'base';
   const query = diffQuery();
   try {
-    const r = await fetch(`/api/diff/files?${query}`);
+    const r = await api(`/api/diff/files?${query}`);
     const j = await r.json();
     // The scope/base changed while this was in flight: its answer is for the
     // old selection — drop it and fetch again (finally) instead of mislabeling.
@@ -432,7 +464,7 @@ async function loadDiffPatch(file) {
   const path = file.path;
   try {
     // The listing's own trees: counts and patch agree, and no re-snapshot per click.
-    const r = await fetch(`/api/diff/file?${diffQuery({ path, ...(diffState.range || {}) })}`);
+    const r = await api(`/api/diff/file?${diffQuery({ path, ...(diffState.range || {}) })}`);
     const j = await r.json();
     if (diffState.current !== path) return; // the user moved on while this loaded
     view.innerHTML = head + (j.error ? `<div class="diff-note">${escapeHtml(j.error)}</div>` : renderPatch(j.patch || ''));
@@ -493,7 +525,7 @@ document.getElementById('btn-cold').onclick = () => action('cold', 'cold restart
 document.getElementById('btn-stop').onclick = () => action('stop', 'stop');
 document.getElementById('btn-shot').onclick = async () => {
   toast('capturing…');
-  const r = await fetch('/api/screenshot', { method: 'POST' });
+  const r = await api('/api/screenshot', { method: 'POST' });
   const j = await r.json();
   toast(j.ok ? `saved ${j.path}` : `shot failed: ${j.error}`);
 };
@@ -501,7 +533,7 @@ document.getElementById('btn-shot').onclick = async () => {
 document.getElementById('btn-clear').onclick = () => {
   state.entries = [];
   render();
-  fetch('/api/logs/clear', { method: 'POST' });
+  api('/api/logs/clear', { method: 'POST' });
 };
 document.getElementById('btn-copy').onclick = () => {
   const text = state.entries.filter(matches).map(e => e.text).join('\n');

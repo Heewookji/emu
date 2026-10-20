@@ -677,6 +677,12 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   실제 인덱스·파일은 건드리지 않음)해 두고 프로젝트를 감시하므로, 파일을 저장하거나 reload하면 탭이 실시간으로 갱신된다.
   생성 파일(`*.g.dart`, `*.freezed.dart`, vendor, lock)은 기본으로 숨긴다.
 - 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
+- **세션 토큰** — 서버는 `127.0.0.1` 에서만 듣고, API는 이 세션의 대시보드와 CLI에만 응답한다.
+  서버를 시작할 때마다 토큰을 만들어 `.emu/server.json`(CLI용)과 대시보드 페이지에 넣는다. 토큰이
+  없거나, 다른 사이트(`Origin`)에서 왔거나, 다른 호스트 이름(DNS rebinding)으로 온 요청은 거부한다.
+  생존 확인용 `GET /api/status` 만 예외. `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
+  새로 고쳐 새 토큰을 받는다. API를 직접 부를 때:
+  `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
 
 ## 동작 원리
 
@@ -695,7 +701,7 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 | 파일 | 내용 |
 |------|------|
 | `run.jsonl` | 구조화된 로그(JSONL) |
-| `server.json` | 실행 중 서버 좌표(port/pid) |
+| `server.json` | 실행 중 서버 좌표(port/pid)와 CLI가 보내는 세션 토큰 |
 | `server.log` | 서버 기동 진단 |
 | `shot-*.png` | 스크린샷 |
 | `memory.json` | 학습된 재계산 힌트(lastScreen 등) |
@@ -787,6 +793,7 @@ lib/src/
   device_lease.dart    머신 전역 디바이스 점유(~/.emu/devices)
   session.dart         프로젝트 탐지 + .emu/ 상태
   server.dart          REST + WebSocket + 정적 대시보드 서빙
+  api_guard.dart       서버를 부를 수 있는 쪽 판정(세션 토큰, Host/Origin 검사)
   version.dart         내장 버전 + GitHub 릴리스 체크(--version/doctor/update)
   cli.dart             명령 파싱 + 서버 클라이언트
 web/                   대시보드 (바닐라 HTML/JS/CSS, 빌드 스텝 없음)

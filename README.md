@@ -735,6 +735,14 @@ to its starting state is the leak signal this is built to catch.
   Generated files (`*.g.dart`, `*.freezed.dart`, vendored, lock files) are hidden by default.
 - Status bar — device, app state, **DevTools link** (a real DevTools served via
   `devtools.serve`).
+- **Session token** — the server listens on `127.0.0.1` only and answers API calls
+  from this session's dashboard and CLI alone: every server start creates a token,
+  written to `.emu/server.json` (for the CLI) and into the dashboard page. A request
+  without it, from another site (`Origin`), or under another host name (DNS
+  rebinding) is refused; `GET /api/status`, the liveness ping, is the one exception.
+  A dashboard tab left open across `emu down`/`up` reloads itself to pick up the new
+  token. To call the API yourself:
+  `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
 
 ## How it works
 
@@ -754,7 +762,7 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | File | Contents |
 |------|----------|
 | `run.jsonl` | Structured logs (JSONL) |
-| `server.json` | Running server coordinates (port/pid) |
+| `server.json` | Running server coordinates (port/pid) and the session token the CLI sends |
 | `server.log` | Server startup diagnostics |
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
@@ -859,6 +867,7 @@ lib/src/
   device_lease.dart    machine-wide device ownership (~/.emu/devices)
   session.dart         project detection + .emu/ state
   server.dart          serves REST + WebSocket + the static dashboard
+  api_guard.dart       who may call the server (session token, Host/Origin checks)
   version.dart         embedded version + GitHub release check (--version/doctor/update)
   cli.dart             command parsing + server client
 web/                   dashboard (vanilla HTML/JS/CSS, no build step)

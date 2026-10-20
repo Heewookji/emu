@@ -1999,7 +1999,7 @@ Future<int> _diffCmd(List<String> args) async {
   Future<Map<String, dynamic>?> fetch(String path, Map<String, String> q) async {
     try {
       final uri = Uri.parse('${info.baseUrl}$path').replace(queryParameters: q);
-      final r = await http.get(uri).timeout(const Duration(seconds: 60));
+      final r = await http.get(uri, headers: info.headers).timeout(const Duration(seconds: 60));
       return jsonDecode(r.body) as Map<String, dynamic>;
     } catch (_) {
       return null;
@@ -2181,7 +2181,7 @@ ServerInfo _requireServer() {
 Future<bool> _ping(ServerInfo info) async {
   try {
     final r = await http
-        .get(Uri.parse('${info.baseUrl}/api/status'))
+        .get(Uri.parse('${info.baseUrl}/api/status'), headers: info.headers)
         .timeout(const Duration(milliseconds: 800));
     return r.statusCode == 200;
   } catch (_) {
@@ -2191,7 +2191,9 @@ Future<bool> _ping(ServerInfo info) async {
 
 Future<Map<String, dynamic>?> _get(ServerInfo info, String path) async {
   try {
-    final r = await http.get(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 5));
+    final r = await http
+        .get(Uri.parse('${info.baseUrl}$path'), headers: info.headers)
+        .timeout(const Duration(seconds: 5));
     if (r.statusCode != 200) return null;
     return jsonDecode(r.body) as Map<String, dynamic>;
   } catch (_) {
@@ -2205,7 +2207,9 @@ Future<Map<String, dynamic>?> _get(ServerInfo info, String path) async {
 /// same convention `_postJson`/`probe`/`inspect` already rely on.
 Future<Map<String, dynamic>?> _getJson(ServerInfo info, String path) async {
   try {
-    final r = await http.get(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 5));
+    final r = await http
+        .get(Uri.parse('${info.baseUrl}$path'), headers: info.headers)
+        .timeout(const Duration(seconds: 5));
     return jsonDecode(r.body) as Map<String, dynamic>;
   } catch (_) {
     return null;
@@ -2214,8 +2218,9 @@ Future<Map<String, dynamic>?> _getJson(ServerInfo info, String path) async {
 
 Future<Map<String, dynamic>?> _post(ServerInfo info, String path) async {
   try {
-    final r =
-        await http.post(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 150));
+    final r = await http
+        .post(Uri.parse('${info.baseUrl}$path'), headers: info.headers)
+        .timeout(const Duration(seconds: 150));
     return jsonDecode(r.body) as Map<String, dynamic>;
   } catch (_) {
     return null;
@@ -2227,7 +2232,7 @@ Future<Map<String, dynamic>?> _postJson(ServerInfo info, String path, String bod
   try {
     final r = await http
         .post(Uri.parse('${info.baseUrl}$path'),
-            headers: {'Content-Type': 'application/json'}, body: body)
+            headers: {...info.headers, 'Content-Type': 'application/json'}, body: body)
         .timeout(timeout);
     return jsonDecode(r.body) as Map<String, dynamic>;
   } catch (_) {

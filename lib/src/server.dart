@@ -12,6 +12,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'api_guard.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
@@ -165,6 +166,11 @@ class EmuServer {
   HttpServer? _http;
   final Set<WebSocketChannel> _sockets = {};
 
+  /// Every API call but the liveness ping must carry this (see
+  /// `api_guard.dart`). New on every start, so a dashboard left open from an
+  /// earlier session can't drive this one.
+  final String token = newSessionToken();
+
   int get port => _http!.port;
 
   Future<void> start(int requestedPort, LaunchOptions opts) async {
@@ -181,7 +187,7 @@ class EmuServer {
     unawaited(_watchFiles());
 
     _http = await _bind(requestedPort);
-    session.writeServerInfo(port: _http!.port, pid: pid);
+    session.writeServerInfo(port: _http!.port, pid: pid, token: token);
     shelf_io.serveRequests(_http!, _handler());
     logStore.system('emu server listening on http://127.0.0.1:${_http!.port}');
 
@@ -506,22 +512,8 @@ class EmuServer {
   }
 
   Handler _handler() {
-    return const Pipeline().addMiddleware(_cors()).addHandler(_route);
+    return const Pipeline().addMiddleware(apiGuard(token)).addHandler(_route);
   }
-
-  Middleware _cors() => (Handler inner) => (Request req) async {
-        if (req.method == 'OPTIONS') {
-          return Response.ok('', headers: _corsHeaders);
-        }
-        final res = await inner(req);
-        return res.change(headers: _corsHeaders);
-      };
-
-  static const _corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
 
   Future<Response> _route(Request req) async {
     final path = '/${req.url.path}';
@@ -569,6 +561,10 @@ class EmuServer {
                     },
             },
         });
+      case '/api/session':
+        // Token check only (the guard already ran): lets the dashboard tell a
+        // restarted server (new token → 401) from one that is down.
+        return _json({'ok': true});
       case '/api/reload':
         return _json((await engine.hotReload()).toJson());
       case '/api/restart':
@@ -1133,6 +1129,16 @@ class EmuServer {
     var rel = path == '/' ? 'index.html' : path.substring(1);
     final bytes = _readWebAsset(rel);
     if (bytes == null) return Response.notFound('not found: $rel');
+    if (rel == 'index.html') {
+      return Response.ok(injectSessionToken(utf8.decode(bytes), token), headers: {
+        'Content-Type': _contentType(rel),
+        // The page carries this session's token: never from cache (a restarted
+        // server has a new one), never inside another site's frame.
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "frame-ancestors 'none'",
+        'X-Frame-Options': 'DENY',
+      });
+    }
     return Response.ok(bytes, headers: {'Content-Type': _contentType(rel)});
   }
 
