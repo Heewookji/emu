@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+### Added
+- 대시보드 페이지 — `emu.yaml` 의 `pages:` 로 프로젝트 도구(로컬 템플릿 전환, 검증, 배포 등)를 대시보드
+  탭으로 붙인다. 페이지는 툴바(`action` 버튼·`toggle` 스위치)와 블록(`output`: 마지막 실행 결과)으로
+  이뤄지고, emu 는 설정에 적힌 명령만 실행한다(요청은 항목 id만 보낸다). 명령은 argv 배열(직접 실행) 또는
+  문자열(`sh -c`)이고, 프로젝트 루트에서 `EMU_PROJECT`·`EMU_PORT`·`EMU_DEVICE`·`EMU_PLATFORM`·`EMU_APP_ID`
+  와 함께 실행되며 `timeout`(기본 60초)이 지나면 끊긴다. `then: reload|restart`, `confirm: true`(명령을
+  보여 주고 묻기), 같은 항목 동시 실행 방지. 토글 상태는 `state` 명령이 출력한 `{"on": bool, "detail"?}`.
+  앱 제어와 기기 화면은 모든 페이지에 그대로 있다. 실행은 열린 대시보드 모두와 Logs 탭(`[ext]`)에 남는다.
+  `emu.yaml` 은 요청마다 다시 읽고, 파일이 바뀌면 대시보드가 새로 고친다. 서버 API `GET /api/pages`,
+  `GET /api/pages/<page>/state/<item>`, `POST /api/pages/<page>/run/<item>` (#24).
+- `emu pages`, `emu run <page>.<item> [on|off] [--yes]` — 같은 항목을 CLI로. 종료코드 0 = 명령과 `then:`
+  이 성공 (#24).
+
 ### Fixed
 - 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을
   닫다가 예외가 나 `exit` 에 이르지 못했고, 서버(포트)와 `flutter run` 이 그대로 남았다. 이제

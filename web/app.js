@@ -180,6 +180,8 @@ function connect() {
     if (msg.type === 'log') appendEntry(msg.entry);
     else if (msg.type === 'status') setStatus(msg.status);
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
+    else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
+    else if (msg.type === 'pages') loadPages();    // emu.yaml changed
   };
 }
 
@@ -492,7 +494,9 @@ function renderPatch(patch) {
   return out.join('') || '<div class="diff-note">no textual changes</div>';
 }
 
+let debugTab = 'logs';
 function showTab(name) {
+  debugTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('log').hidden = name !== 'logs';
   document.getElementById('log-tools').hidden = name !== 'logs';
@@ -508,6 +512,228 @@ diffEls.base.addEventListener('keydown', (e) => { if (e.key === 'Enter') { saveD
 document.getElementById('diff-refresh').onclick = loadDiffFiles;
 loadDiffPrefs();
 loadDiffFiles(); // also decides whether the tab exists (git repo or not)
+
+// ---- dashboard pages ---------------------------------------------------------
+// Project tools declared in emu.yaml (`pages:`): a toolbar of toggles and
+// actions plus blocks. The server runs the commands and this only shows what
+// they print. The top bar's app controls and the screen panel stay put on
+// every page — a page's work ends in a reload and a look at the screen.
+
+const pageEls = {
+  tabs: document.getElementById('page-tabs'),
+  bar: document.getElementById('pagebar'),
+  body: document.getElementById('ext-page'),
+  debugToolbar: document.getElementById('debug-toolbar'),
+  confirm: document.getElementById('confirm'),
+  confirmDim: document.getElementById('confirm-dim'),
+};
+const pageState = {
+  pages: [],
+  problems: [],
+  current: 'debug',
+  last: {},              // page id → its last run
+  running: new Set(),    // 'page.item' in flight, from any client
+  toggles: {},           // 'page.item' → {ok, on, detail, error}
+};
+const PAGE_KEY = 'emu.page';
+try { pageState.current = localStorage.getItem(PAGE_KEY) || 'debug'; } catch (_) {}
+
+const currentPage = () => pageState.pages.find(p => p.id === pageState.current);
+
+async function loadPages() {
+  try {
+    const j = await (await api('/api/pages')).json();
+    pageState.pages = j.pages || [];
+    pageState.problems = j.problems || [];
+    Object.assign(pageState.last, j.last || {});
+  } catch (_) { return; }
+  if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
+  renderPageTabs();
+  showPage(pageState.current);
+}
+
+function renderPageTabs() {
+  const tabs = [{ id: 'debug', title: 'Debug' }, ...pageState.pages];
+  const problems = pageState.problems;
+  pageEls.tabs.hidden = !pageState.pages.length && !problems.length;
+  pageEls.tabs.innerHTML = tabs.map(p =>
+    `<button class="page-tab${p.id === pageState.current ? ' active' : ''}" data-page="${escapeHtml(p.id)}"`
+    + `${p.id === 'debug' ? '' : ' title="from emu.yaml"'}>${escapeHtml(p.title)}</button>`).join('')
+    + (problems.length
+      ? `<span class="page-problems" title="${escapeHtml(problems.join('\n'))}">⚠ ${problems.length} in emu.yaml pages</span>` : '');
+  pageEls.tabs.querySelectorAll('.page-tab').forEach(b => { b.onclick = () => showPage(b.dataset.page); });
+}
+
+function showPage(id) {
+  pageState.current = id;
+  try { localStorage.setItem(PAGE_KEY, id); } catch (_) {}
+  pageEls.tabs.querySelectorAll('.page-tab').forEach(b => b.classList.toggle('active', b.dataset.page === id));
+  const page = currentPage();
+  const debug = !page;
+  pageEls.debugToolbar.hidden = !debug;
+  pageEls.bar.hidden = debug;
+  pageEls.body.hidden = debug;
+  if (debug) { showTab(debugTab); return; }
+  for (const id of ['log', 'changes']) document.getElementById(id).hidden = true;
+  renderPageBar(page);
+  renderPageBody(page);
+  refreshToggles(page);
+}
+
+function itemKey(page, item) { return `${page.id}.${item.id}`; }
+
+function renderPageBar(page) {
+  pageEls.bar.innerHTML = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
+    const key = itemKey(page, item);
+    const busy = pageState.running.has(key);
+    if (item.kind === 'toggle') {
+      const st = pageState.toggles[key];
+      const on = st?.ok && st.on;
+      const label = busy ? '…' : !st ? '' : !st.ok ? '?' : on ? 'ON' : 'OFF';
+      const title = st && !st.ok ? st.error : `on: ${item.on}\noff: ${item.off}`;
+      return `<button class="ext-toggle${on ? ' on' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
+        + ` role="switch" aria-checked="${on ? 'true' : 'false'}" title="${escapeHtml(title)}">`
+        + `<span class="ext-sw"></span>${escapeHtml(item.label)} <span class="ext-state">${label}</span>`
+        + (st?.ok && st.detail ? `<span class="ext-detail">${escapeHtml(st.detail)}</span>` : '') + '</button>';
+    }
+    return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
+      + ` title="${escapeHtml(item.command)}">${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
+  }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
+    el.onclick = () => pressItem(page, page.toolbar.find(i => i.id === el.dataset.item));
+  });
+  document.getElementById('pages-refresh').onclick = loadPages;
+}
+
+function renderPageBody(page) {
+  const areas = { left: [], main: [], bottom: [] };
+  for (const b of page.blocks) areas[b.area]?.push(b);
+  const body = pageEls.body;
+  body.classList.toggle('no-left', !areas.left.length);
+  body.classList.toggle('no-main', !areas.main.length);
+  body.innerHTML = page.blocks.length
+    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}"></div>`).join('')
+    : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
+  for (const [area, blocks] of Object.entries(areas)) {
+    const host = body.querySelector(`[data-area="${area}"]`);
+    for (const b of blocks) host?.insertAdjacentHTML('beforeend', `<section class="ext-block" data-block="${escapeHtml(b.id)}"></section>`);
+  }
+  renderBlocks(page);
+}
+
+function renderBlocks(page) {
+  for (const b of page.blocks) {
+    const el = pageEls.body.querySelector(`[data-block="${CSS.escape(b.id)}"]`);
+    if (el && b.kind === 'output') el.innerHTML = outputHtml(page);
+  }
+}
+
+// The page's last run: what ran, how it ended, what it printed.
+function outputHtml(page) {
+  const busy = page.toolbar.filter(i => pageState.running.has(itemKey(page, i)));
+  const run = pageState.last[page.id];
+  if (busy.length) {
+    return `<div class="blk-head"><span class="name">output</span><span class="cmd">running ${busy.map(i => escapeHtml(i.label)).join(', ')}…</span></div>`
+      + `<pre class="ext-out muted">${run ? escapeHtml(stripAnsi(run.output)) : ''}</pre>`;
+  }
+  if (!run) return '<div class="blk-head"><span class="name">output</span></div><div class="ext-empty">no run yet — press a toolbar button</div>';
+  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+  const when = new Date(run.at).toLocaleTimeString();
+  return `<div class="blk-head"><span class="name">output</span><span class="cmd" title="${escapeHtml(run.command)}">$ ${escapeHtml(run.command)}</span>`
+    + `<span class="meta">${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${when}${then}</span></div>`
+    + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
+}
+
+async function refreshToggles(page) {
+  await Promise.all(page.toolbar.filter(i => i.kind === 'toggle').map(async (t) => {
+    try {
+      const r = await api(`/api/pages/${encodeURIComponent(page.id)}/state/${encodeURIComponent(t.id)}`);
+      pageState.toggles[itemKey(page, t)] = await r.json();
+    } catch (_) { /* server gone: the websocket reconnect reloads */ }
+  }));
+  if (currentPage() === page) renderPageBar(page);
+}
+
+async function pressItem(page, item) {
+  if (!item) return;
+  const key = itemKey(page, item);
+  if (pageState.running.has(key)) return;
+  const body = {};
+  if (item.kind === 'toggle') {
+    const st = pageState.toggles[key];
+    body.on = !(st?.ok && st.on);
+  } else if (item.confirm) {
+    if (!(await confirmRun(item))) return;
+    body.confirmed = true;
+  }
+  pageState.running.add(key);
+  renderPageBar(page);
+  renderBlocks(page);
+  try {
+    const r = await api(`/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.exitCode === undefined) toast(`${item.label}: ${j.error || 'failed'}`); // busy, unknown item
+    else finishRun(page, item, j);
+  } catch (e) {
+    toast(`${item.label} failed: ${e}`);
+  } finally {
+    pageState.running.delete(key);
+    if (currentPage() === page) { renderPageBar(page); renderBlocks(page); }
+  }
+}
+
+function finishRun(page, item, run) {
+  pageState.last[page.id] = run;
+  if (run.state) pageState.toggles[itemKey(page, item)] = run.state;
+  toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
+  if (run.then?.ok) scheduleRefresh(); // reloaded: show the new screen
+}
+
+// Runs started anywhere (this tab, another tab, `emu run`) show up here too.
+function onPageRun(msg) {
+  const page = pageState.pages.find(p => p.id === msg.page);
+  if (!page) return;
+  const key = `${msg.page}.${msg.item}`;
+  if (msg.event === 'started') pageState.running.add(key);
+  else if (msg.event === 'finished') {
+    pageState.running.delete(key);
+    pageState.last[page.id] = msg.run;
+    const item = page.toolbar.find(i => i.id === msg.item);
+    if (item && msg.run?.state) pageState.toggles[key] = msg.run.state;
+  }
+  if (currentPage() !== page) return;
+  renderPageBar(page);
+  renderBlocks(page);
+  // Any command may have changed what a toggle reports.
+  if (msg.event === 'finished') refreshToggles(page);
+}
+
+let confirmResolve = null;
+function confirmRun(item) {
+  document.getElementById('confirm-title').textContent = `Run “${item.label}”?`;
+  document.getElementById('confirm-cmd').textContent = `$ ${item.command}`;
+  document.getElementById('confirm-then').textContent =
+    item.then !== 'none' ? `then: hot ${item.then} when it succeeds` : '';
+  pageEls.confirm.hidden = pageEls.confirmDim.hidden = false;
+  document.getElementById('confirm-run').focus();
+  return new Promise((resolve) => { confirmResolve = resolve; });
+}
+function closeConfirm(ok) {
+  pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;
+  confirmResolve?.(ok);
+  confirmResolve = null;
+}
+document.getElementById('confirm-run').onclick = () => closeConfirm(true);
+document.getElementById('confirm-cancel').onclick = () => closeConfirm(false);
+pageEls.confirmDim.onclick = () => closeConfirm(false);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmResolve) closeConfirm(false); });
+
+function stripAnsi(s) { return (s || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ''); }
+
+loadPages();
 
 let toastTimer;
 function toast(text) {
@@ -560,6 +786,7 @@ document.querySelectorAll('.lvl').forEach(btn => {
 // Keyboard: r = reload, R = restart (when not typing in the search box).
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return; // don't hijack typing in any field
+  if (confirmResolve) return; // the confirm dialog is up
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
 });

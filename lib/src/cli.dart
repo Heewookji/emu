@@ -18,6 +18,7 @@ import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
+import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
 import 'server.dart';
@@ -98,6 +99,10 @@ Future<int> runCli(List<String> argv) async {
         return await _openUrlCmd(rest);
       case 'diff':
         return await _diffCmd(rest);
+      case 'pages':
+        return await _pagesCmd(rest);
+      case 'run':
+        return await _runCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -477,6 +482,7 @@ Future<int> _config(List<String> args) async {
         'forwardPorts': pc.forwardPorts,
         'onDeviceReady': pc.onDeviceReady,
         'onAppStarted': pc.onAppStarted,
+        'pages': [for (final page in parsePages(pc.pages).pages) page.id],
       },
       'availableProfiles': names.toList()..sort(),
       'memory': mem.toJson(),
@@ -504,6 +510,9 @@ Future<int> _config(List<String> args) async {
   row('forwardPorts', pc.forwardPorts.isEmpty ? null : pc.forwardPorts.join(', '));
   row('onDeviceReady', pc.onDeviceReady.isEmpty ? null : pc.onDeviceReady.join(' ; '));
   row('onAppStarted', pc.onAppStarted.isEmpty ? null : pc.onAppStarted.join(' ; '));
+  final pages = parsePages(pc.pages);
+  row('pages', pages.pages.isEmpty ? null : pages.pages.map((p) => p.id).join(', '));
+  warnings.addAll(pages.problems.map((p) => 'pages: $p'));
   if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
           .every((v) => v == null) &&
       [pc.dartDefines, pc.dartDefineFromFile, pc.reversePorts, pc.forwardPorts,
@@ -840,6 +849,7 @@ Future<int> _up(List<String> args) async {
     if (!res.flag('dds')) '--no-dds',
     if (res.flag('share-device')) '--share-device',
     if (tempDevice) '--temp-device',
+    if (wantedProfile != null) '--profile=$wantedProfile',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -2070,6 +2080,104 @@ Future<int> _diffCmd(List<String> args) async {
   return 0;
 }
 
+// --------------------------------------------------------------------------
+// pages / run — dashboard pages from emu.yaml (see pages.dart)
+// --------------------------------------------------------------------------
+Future<int> _pagesCmd(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu pages [--json]   (dashboard pages declared in emu.yaml)');
+  if (bad != null) return bad;
+  final info = _requireServer();
+  final data = await _getJson(info, '/api/pages');
+  if (data == null || data['pages'] is! List) {
+    stderr.writeln('✗ pages: ${data?['error'] ?? 'no response from the server'}');
+    return 1;
+  }
+  if (args.contains('--json')) {
+    print(jsonEncode(data));
+    return 0;
+  }
+  final pages = (data['pages'] as List).cast<Map<String, dynamic>>();
+  if (pages.isEmpty) print('(no pages — add `pages:` to emu.yaml)');
+  for (final page in pages) {
+    print('${page['id']}  ${page['title']}');
+    for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
+      final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
+      final notes = [if (i['then'] != 'none') 'then ${i['then']}', if (i['confirm'] == true) 'asks first'];
+      print('  ${'${i['kind']}'.padRight(7)}${'${i['id']}'.padRight(14)}$what'
+          '${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
+    }
+    for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
+      print('  ${'block'.padRight(7)}${'${b['id']}'.padRight(14)}${b['kind']} (${b['area']})');
+    }
+  }
+  for (final problem in (data['problems'] as List? ?? const [])) {
+    stderr.writeln('! emu.yaml pages: $problem');
+  }
+  return 0;
+}
+
+Future<int> _runCmd(List<String> args) async {
+  final parser = ArgParser()
+    ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: true')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu run <page>.<item> [on|off] [-y, --yes] [--json]\n'
+      '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), the same as\n'
+      '   pressing it in the dashboard. A toggle takes on or off; an action marked\n'
+      '   confirm: true runs only with --yes. Exit 0 = the command and its\n'
+      '   then: reload/restart succeeded. `emu pages` lists the items.';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final rest = res.rest;
+  final target = rest.isEmpty ? '' : rest.first;
+  final dot = target.indexOf('.');
+  if (rest.isEmpty || rest.length > 2 || dot <= 0 || dot == target.length - 1 ||
+      (rest.length == 2 && rest[1] != 'on' && rest[1] != 'off')) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final page = target.substring(0, dot), item = target.substring(dot + 1);
+  final info = _requireServer();
+  final r = await _postJson(
+    info,
+    '/api/pages/${Uri.encodeComponent(page)}/run/${Uri.encodeComponent(item)}',
+    jsonEncode({'confirmed': res.flag('yes'), if (rest.length == 2) 'on': rest[1] == 'on'}),
+    // The server bounds the command (its timeout:); this only must outlast it.
+    timeout: const Duration(hours: 1),
+  );
+  if (r == null) {
+    stderr.writeln('✗ run: no response from the server');
+    return 1;
+  }
+  final ok = r['ok'] == true;
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return ok ? 0 : 1;
+  }
+  if (r['needsConfirm'] == true) {
+    stderr.writeln('✗ $target asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
+    return 1;
+  }
+  if (r['exitCode'] == null) {
+    stderr.writeln('✗ ${r['error']}'); // unknown page/item, already running, bad on/off
+    return 1;
+  }
+  final output = '${r['output'] ?? ''}';
+  if (output.isNotEmpty) stdout.write(output.endsWith('\n') ? output : '$output\n');
+  final secs = ((r['ms'] as num? ?? 0) / 1000).toStringAsFixed(1);
+  final then = r['then'] as Map?;
+  final state = r['state'] as Map?;
+  final line = '${ok ? '✓' : '✗'} $target — ${r['error'] ?? 'exit 0'} · ${secs}s'
+      '${then == null ? '' : ' · ${then['action']}: ${then['message'] ?? (then['ok'] == true ? 'ok' : 'failed')}'}'
+      '${state == null ? '' : state['ok'] == true ? ' · now ${state['on'] == true ? 'on' : 'off'}${state['detail'] != null ? ' (${state['detail']})' : ''}' : ' · state: ${state['error']}'}';
+  if (ok) {
+    print(line);
+  } else {
+    stderr.writeln(line);
+  }
+  return ok ? 0 : 1;
+}
+
 Future<int> _down(List<String> args) async {
   const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
       '   Stop the session. --kill-device also powers off this session\'s device.\n'
@@ -2283,6 +2391,7 @@ Future<int> runServe(List<String> args) async {
     ..addOption('flavor')
     ..addOption('target')
     ..addOption('project')
+    ..addOption('profile')
     ..addMultiOption('dart-define')
     ..addMultiOption('dart-define-from-file')
     ..addMultiOption('dart-entrypoint-args')
@@ -2325,6 +2434,7 @@ Future<int> runServe(List<String> args) async {
         forwardPorts: res.multiOption('forward-port').map(parsePortMapping).nonNulls.toList(),
         onDeviceReady: res.multiOption('on-device-ready'),
         onAppStarted: res.multiOption('on-app-started'),
+        profile: res.option('profile'),
       ),
     );
   } catch (e, st) {
@@ -2428,6 +2538,10 @@ COMMANDS
      --timeout <s>         max time to wait (default 10)
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
+  pages                  List the dashboard pages declared in emu.yaml (`pages:`)
+  run <page>.<item> [on|off] [-y, --yes]
+                         Run a page's toolbar item, as its dashboard button does.
+                         A toggle takes on/off; confirm: true actions need --yes
   diff [--scope head|base|reload|pending] [--stat] [--all] [path...]
                          Changed code: uncommitted (head), since the base
                          branch (base), applied by the last reload (reload) or

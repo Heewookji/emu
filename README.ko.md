@@ -33,6 +33,7 @@ flutter run --machine  ◄─JSON-RPC─►  엔진  ──►  서버 (127.0.0.
 - [핵심 워크플로: 에이전트 디버그 루프](#핵심-워크플로-에이전트-디버그-루프)
 - [명령어 레퍼런스](#명령어-레퍼런스)
 - [웹 대시보드](#웹-대시보드)
+- [대시보드 페이지](#대시보드-페이지)
 - [동작 원리](#동작-원리)
 - [상태 파일(.emu/)](#상태-파일emu)
 - [디바이스 점유](#디바이스-점유)
@@ -677,12 +678,76 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   실제 인덱스·파일은 건드리지 않음)해 두고 프로젝트를 감시하므로, 파일을 저장하거나 reload하면 탭이 실시간으로 갱신된다.
   생성 파일(`*.g.dart`, `*.freezed.dart`, vendor, lock)은 기본으로 숨긴다.
 - 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
+- **페이지** — `emu.yaml` 에 선언한 프로젝트 도구가 Debug 옆 탭으로 붙는다.
+  [대시보드 페이지](#대시보드-페이지) 참고.
 - **세션 토큰** — 서버는 `127.0.0.1` 에서만 듣고, API는 이 세션의 대시보드와 CLI에만 응답한다.
   서버를 시작할 때마다 토큰을 만들어 `.emu/server.json`(CLI용)과 대시보드 페이지에 넣는다. 토큰이
   없거나, 다른 사이트(`Origin`)에서 왔거나, 다른 호스트 이름(DNS rebinding)으로 온 요청은 거부한다.
   생존 확인용 `GET /api/status` 만 예외. `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
   새로 고쳐 새 토큰을 받는다. API를 직접 부를 때:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## 대시보드 페이지
+
+프로젝트가 자기 도구 — 로컬 템플릿 전환, 검증, 배포 — 를 대시보드에 붙일 수 있다. emu 는 그 도구가
+무엇인지 모른다. `emu.yaml` 에 `pages:` 로 적으면 페이지마다 **Debug** 옆에 탭이 생긴다. 앱 제어
+(Reload … Shot)와 기기 화면은 모든 페이지에서 같은 자리에 있어, "스위치 → reload → 화면 확인"이 한
+화면에서 끝난다.
+
+```yaml
+# emu.yaml
+pages:
+  - id: templates
+    title: Templates
+    toolbar:
+      - toggle:
+          id: local
+          label: local templates
+          state: [./tool/templates, status, --json]   # {"on": true, "detail": "2 files"} 출력
+          on: [./tool/templates, enable]
+          off: [./tool/templates, disable]
+          then: reload
+      - action: { id: sync, run: [./tool/templates, sync], then: reload }
+      - action: { id: validate, run: ./tool/templates validate --all }
+      - action:
+          id: publish
+          label: publish…
+          run: [./tool/templates, publish, --target, ../cdn-checkout]
+          confirm: true
+          timeout: 300
+    blocks:
+      - output: {}
+```
+
+| 키 | 뜻 |
+|----|----|
+| `toolbar` | `action`(버튼)과 `toggle`(스위치) |
+| `run` / `state` / `on` / `off` | 명령. `[program, arg, …]` 은 직접 실행, 문자열은 `sh -c`. 상대 경로 프로그램(`./tool/x`)은 프로젝트 루트 기준 |
+| `then` | 명령이 성공하면 `reload` 또는 `restart`(기본 `none`) |
+| `confirm` | 대시보드가 실행할 명령을 그대로 보여 주고 묻는다. `emu run` 은 `--yes` 필요 |
+| `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
+| `blocks` | 페이지 본문의 패널. `output` 은 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+
+- 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
+  로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
+- 명령은 프로젝트 루트에서 `EMU_PROJECT`, `EMU_PORT`, 그리고 정해지면 `EMU_DEVICE`, `EMU_PLATFORM`,
+  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다. 같은 항목은 동시에 두 번 돌지 않는다.
+- 서버는 설정에 적힌 명령만 실행한다. 요청은 페이지와 항목 id만 보내고 명령은 보내지 않는다.
+  `emu.yaml` 은 요청마다 다시 읽으므로 고치면 재시작 없이 반영된다(파일이 바뀌면 열린 대시보드가
+  새로 고치고, ↻ 로도 다시 읽는다).
+- 실행은 열린 대시보드 모두(CLI에서 실행해도)와 Logs 탭의 `[ext] <page>.<item>` 줄에 남는다. 실패한
+  실행은 출력 끝부분과 함께 error 로 남는다.
+- `pages:` 의 문제(`run` 누락, 모르는 `then`)는 페이지 탭 옆과 `emu pages` 에 표시되고, 잘못된 항목만
+  빠진다.
+
+```bash
+emu pages                          # 페이지·항목·블록 목록(--json 가능)
+emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
+emu run templates.local on         # 토글은 on/off
+emu run templates.publish --yes    # confirm: true 는 --yes 필요
+```
+
+`emu run` 은 명령과 `then:` reload/restart 가 성공하면 0으로 끝난다.
 
 ## 동작 원리
 
@@ -788,6 +853,8 @@ lib/src/
   assertions.dart      순수 expect/deny 로그 단언 로직
   probe.dart           VM Service logpoint: 라인에서 변수 캡처
   project_config.dart  계층 설정(emu.yaml) 병합
+  pages.dart           emu.yaml `pages:` 대시보드 페이지 해석 + 문제 목록
+  pages_api.dart       페이지 항목 실행(argv / sh -c, timeout, then:) + /api/pages
   project_memory.dart  학습된 재계산 힌트(.emu/memory.json)
   device_manager.dart  기기 탐색 + 에뮬레이터/시뮬레이터 부팅
   device_lease.dart    머신 전역 디바이스 점유(~/.emu/devices)

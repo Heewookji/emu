@@ -27,6 +27,8 @@ import 'log_store.dart';
 import 'memory_diff.dart' as mem;
 import 'models.dart';
 import 'open_url.dart';
+import 'pages.dart';
+import 'pages_api.dart';
 import 'probe.dart';
 import 'session.dart';
 import 'settle.dart';
@@ -54,6 +56,7 @@ class LaunchOptions {
     this.forwardPorts = const [],
     this.onDeviceReady = const [],
     this.onAppStarted = const [],
+    this.profile,
     this.extra = const [],
   });
 
@@ -96,6 +99,9 @@ class LaunchOptions {
   final List<PortMapping> forwardPorts;
   final List<String> onDeviceReady;
   final List<String> onAppStarted;
+
+  /// `up --profile`: the server re-reads `emu.yaml` for dashboard pages with it.
+  final String? profile;
   final List<String> extra;
 }
 
@@ -163,6 +169,10 @@ class EmuServer {
   StreamSubscription<AppStatus>? _snapshotSub;
   final DeviceManager devices = DeviceManager();
 
+  /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
+  late final PagesApi pages;
+  Timer? _pagesChangedDebounce;
+
   HttpServer? _http;
   final Set<WebSocketChannel> _sockets = {};
 
@@ -184,6 +194,17 @@ class EmuServer {
 
     diff = GitDiff(session.projectRoot.path);
     _snapshotSub = engine.statusStream.listen(_snapshotOnReload);
+    pages = PagesApi(
+      projectRoot: session.projectRoot.path,
+      profile: opts.profile,
+      environment: _pageEnvironment,
+      followUp: _pageFollowUp,
+      broadcast: _broadcast,
+      log: (text, level) => logStore.add(text, level: level, source: 'ext'),
+    );
+    for (final problem in pages.load().problems) {
+      logStore.add('emu.yaml pages: $problem', level: LogLevel.warn, source: 'system');
+    }
     unawaited(_watchFiles());
 
     _http = await _bind(requestedPort);
@@ -645,8 +666,33 @@ class EmuServer {
         });
         return _json({'ok': true, 'message': 'shutting down'});
       default:
+        if (path == '/api/pages' || path.startsWith('/api/pages/')) return pages.handle(req, path);
         return _json({'error': 'not found'}, status: 404);
     }
+  }
+
+  /// What page commands see, like the hooks: the project, this server, and
+  /// the device and app once known.
+  Map<String, String> _pageEnvironment() {
+    final id = engine.status.deviceId;
+    final platform = id == null ? null : platformForDeviceId(id);
+    return {
+      'EMU_PROJECT': session.projectRoot.path,
+      'EMU_PORT': '$port',
+      'EMU_DEVICE': ?id,
+      'EMU_PLATFORM': ?platform,
+      'EMU_APP_ID': ?(platform == null ? null : builtAppId(session.projectRoot.path, platform)),
+    };
+  }
+
+  /// A page item's `then:` — the same reload/restart as the buttons.
+  Future<Map<String, dynamic>> _pageFollowUp(Then then) async {
+    final r = switch (then) {
+      Then.reload => await engine.hotReload(),
+      Then.restart => await engine.hotRestart(),
+      Then.none => null,
+    };
+    return {'action': then.name, ...?r?.toJson()};
   }
 
   String get _platform => platformForDeviceId(engine.status.deviceId);
@@ -838,14 +884,20 @@ class EmuServer {
   }
 
   Future<void> _watchFiles() async {
-    if (!await diff.isRepo() || _disposed) return;
+    final repo = await diff.isRepo();
+    if (_disposed || (!repo && pages.load().pages.isEmpty)) return;
     final root = session.projectRoot.path;
     try {
       _fileWatch = session.projectRoot.watch(recursive: true).listen((e) {
         // `root/` (not bare `root`): a sibling like `myapp2/` must not match `myapp`.
         final under = e.path.startsWith('$root/') || e.path.startsWith('$root${Platform.pathSeparator}');
         final rel = under ? e.path.substring(root.length + 1) : e.path;
-        if (isWatchNoise(rel)) return;
+        if (rel == 'emu.yaml' || rel == 'emu.local.yaml') {
+          // Dashboards re-read the pages (the server reads the file per request).
+          _pagesChangedDebounce?.cancel();
+          _pagesChangedDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'pages'}));
+        }
+        if (!repo || isWatchNoise(rel)) return;
         _fileWatchDebounce?.cancel();
         _fileWatchDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'diff', 'reason': 'files'}));
       }, onError: (_) {});
@@ -1149,6 +1201,7 @@ class EmuServer {
     _disposed = true;
     await _postHocClaim?.cancel();
     _fileWatchDebounce?.cancel();
+    _pagesChangedDebounce?.cancel();
     await _fileWatch?.cancel();
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();

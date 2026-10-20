@@ -36,6 +36,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Core workflow: the agent debug loop](#core-workflow-the-agent-debug-loop)
 - [Command reference](#command-reference)
 - [Web dashboard](#web-dashboard)
+- [Dashboard pages](#dashboard-pages)
 - [How it works](#how-it-works)
 - [State files (.emu/)](#state-files-emu)
 - [Device ownership](#device-ownership)
@@ -735,6 +736,8 @@ to its starting state is the leak signal this is built to catch.
   Generated files (`*.g.dart`, `*.freezed.dart`, vendored, lock files) are hidden by default.
 - Status bar — device, app state, **DevTools link** (a real DevTools served via
   `devtools.serve`).
+- **Pages** — tabs next to Debug for project tools declared in `emu.yaml`; see
+  [Dashboard pages](#dashboard-pages).
 - **Session token** — the server listens on `127.0.0.1` only and answers API calls
   from this session's dashboard and CLI alone: every server start creates a token,
   written to `.emu/server.json` (for the CLI) and into the dashboard page. A request
@@ -743,6 +746,71 @@ to its starting state is the leak signal this is built to catch.
   A dashboard tab left open across `emu down`/`up` reloads itself to pick up the new
   token. To call the API yourself:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## Dashboard pages
+
+A project can add its own tools to the dashboard — a local-template switch, a
+validator, a publish step — without emu knowing what they do. Declare them as
+`pages:` in `emu.yaml`; each page gets a tab next to **Debug**. The app controls
+(Reload … Shot) and the screen panel stay in place on every page, so "flip a
+switch → reload → look at the screen" happens on one screen.
+
+```yaml
+# emu.yaml
+pages:
+  - id: templates
+    title: Templates
+    toolbar:
+      - toggle:
+          id: local
+          label: local templates
+          state: [./tool/templates, status, --json]   # prints {"on": true, "detail": "2 files"}
+          on: [./tool/templates, enable]
+          off: [./tool/templates, disable]
+          then: reload
+      - action: { id: sync, run: [./tool/templates, sync], then: reload }
+      - action: { id: validate, run: ./tool/templates validate --all }
+      - action:
+          id: publish
+          label: publish…
+          run: [./tool/templates, publish, --target, ../cdn-checkout]
+          confirm: true
+          timeout: 300
+    blocks:
+      - output: {}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `toolbar` | `action` (a button) and `toggle` (a switch) |
+| `run` / `state` / `on` / `off` | A command: `[program, arg, …]` runs directly, a string runs with `sh -c`. A relative program (`./tool/x`) resolves against the project root |
+| `then` | `reload` or `restart` once the command succeeds (default `none`) |
+| `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
+| `timeout` | Seconds before the command is killed (default 60) |
+| `blocks` | Panels in the page body. `output` shows the page's last run: command, exit code, time, output |
+
+- A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
+  enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
+- Commands run in the project root with `EMU_PROJECT`, `EMU_PORT` and, once known,
+  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed.
+  An item never runs twice at once.
+- The server runs only commands written in the config: a request names a page and an item,
+  never a command. `emu.yaml` is read again on every request, so edits apply without a
+  restart (open dashboards refresh when the file changes; ↻ re-reads it too).
+- A run shows up in every open dashboard, also when started from the CLI, and in the Logs
+  tab as `[ext] <page>.<item>` lines; a failed run is logged as an error with the end of
+  its output.
+- Problems in `pages:` (a missing `run`, an unknown `then`) are listed next to the page tabs
+  and by `emu pages`; only the broken item is skipped.
+
+```bash
+emu pages                          # pages, items and blocks (--json available)
+emu run templates.sync             # same as pressing the button: its output, then a result line
+emu run templates.local on         # a toggle takes on/off
+emu run templates.publish --yes    # confirm: true needs --yes
+```
+
+`emu run` exits 0 when the command and its `then:` reload/restart succeeded.
 
 ## How it works
 
@@ -862,6 +930,8 @@ lib/src/
   assertions.dart      pure expect/deny log assertion logic
   probe.dart           VM Service logpoint: capture variables at a line
   project_config.dart  layered config (emu.yaml) merge
+  pages.dart           dashboard pages declared in emu.yaml (`pages:`): parsing + problems
+  pages_api.dart       runs page items (argv / sh -c, timeout, then:) and serves /api/pages
   project_memory.dart  learned recomputation hints (.emu/memory.json)
   device_manager.dart  device discovery + emulator/simulator boot
   device_lease.dart    machine-wide device ownership (~/.emu/devices)
