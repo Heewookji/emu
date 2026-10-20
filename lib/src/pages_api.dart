@@ -473,9 +473,9 @@ class PagesApi {
       proc.stderr.transform(decoder).forEach(all.add),
     ]);
     var timedOut = false;
-    final code = await proc.exitCode.timeout(timeout, onTimeout: () {
+    final code = await proc.exitCode.timeout(timeout, onTimeout: () async {
       timedOut = true;
-      proc.kill(ProcessSignal.sigkill);
+      await killTree(proc.pid);
       return -1;
     });
     await drained.timeout(const Duration(seconds: 2), onTimeout: () => const []);
@@ -504,6 +504,26 @@ class PagesApi {
     final last = tail.length > 20 ? tail.sublist(tail.length - 20) : tail;
     log('[ext] $key ✗ ${run.error ?? 'exit 0'} · ${secs}s$follow${last.join().isEmpty ? '' : '\n${last.join('\n')}'}',
         LogLevel.error);
+  }
+}
+
+/// SIGKILL [pid] and everything under it. Killing only the direct child
+/// would orphan what it spawned (`sh -c 'a | b'`, a script running a build)
+/// and those keep running past the timeout. The child shares emu's process
+/// group, so a group kill is not an option; descendants are collected first
+/// (via `pgrep -P`), since once their parent dies they are reparented away.
+Future<void> killTree(int pid) async {
+  final all = <int>[pid];
+  for (var i = 0; i < all.length; i++) {
+    try {
+      final r = await Process.run('pgrep', ['-P', '${all[i]}']);
+      all.addAll('${r.stdout}'.split('\n').map((l) => int.tryParse(l.trim())).whereType<int>());
+    } catch (_) {
+      break; // no pgrep — at least the direct child still goes
+    }
+  }
+  for (final p in all) {
+    Process.killPid(p, ProcessSignal.sigkill);
   }
 }
 

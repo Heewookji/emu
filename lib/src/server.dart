@@ -1221,6 +1221,8 @@ class EmuServer {
         'Cache-Control': 'no-store',
         'Content-Security-Policy': "frame-ancestors 'none'",
         'X-Frame-Options': 'DENY',
+        // Sub-resource URLs carry ?token=; no link out of the page may leak them.
+        'Referrer-Policy': 'no-referrer',
       });
     }
     return Response.ok(bytes, headers: {'Content-Type': _contentType(rel)});

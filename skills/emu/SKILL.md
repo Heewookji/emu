@@ -133,8 +133,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu status` — 세션/기기/앱 상태 + VM Service URI.
 - `emu open` — 대시보드를 브라우저로 열기.
 - `emu pages` / `emu run <page>.<item> [on|off] [--select <col>=<value>] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
-  선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정.
-  `confirm: true` 항목은 `--yes` 가 있어야 실행된다.
+  선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정(명령이
+  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm: true` 항목은 `--yes` 가
+  있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
   form 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
 - `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이

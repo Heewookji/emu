@@ -810,6 +810,7 @@ pages:
 emu pages                          # 페이지·항목·블록 목록(--json 가능)
 emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
 emu run templates.local on         # 토글은 on/off
+emu run templates.local            # on/off 없이 주면 현재 상태
 emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
 emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
 emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
@@ -817,7 +818,8 @@ emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```
 
-`emu run` 은 명령과 `then:` reload/restart 가 성공하면 0으로 끝난다.
+`emu run` 은 명령과 `then:` reload/restart 가 성공하면 0, 명령이 실패하면 그 명령의 종료코드로 끝난다.
+`emu pages` 는 세션 없이도 동작한다. 그때는 `emu.yaml` 을 직접 읽으므로 `emu up` 전에 설정을 확인할 수 있다.
 
 ## 동작 원리
 
