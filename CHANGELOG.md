@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-20
+
 ### Added
 - 대시보드에서 `emu.yaml` 로 정의한 페이지 탭에 `yaml` 배지 — 어디서 온 탭인지 툴팁 없이 보인다.
 - 대시보드 페이지 패널 크기 조정 — 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기를 바꾼다.
@@ -276,7 +278,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/HuanSuh/emu/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HuanSuh/emu/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HuanSuh/emu/compare/v0.8.0...v0.9.0
