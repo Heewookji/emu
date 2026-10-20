@@ -514,6 +514,46 @@ document.getElementById('diff-refresh').onclick = loadDiffFiles;
 loadDiffPrefs();
 loadDiffFiles(); // also decides whether the tab exists (git repo or not)
 
+// Drag [handle] (a pointer press [e]) and call [move] with each pointer
+// event, then [done] once — the panel resizers' common part.
+function dragHandle(handle, e, move, done) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  handle.setPointerCapture(e.pointerId);
+  handle.classList.add('dragging');
+  document.body.classList.add('resizing');
+  const up = () => {
+    handle.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', up);
+    handle.removeEventListener('pointercancel', up);
+    done();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', up);
+  handle.addEventListener('pointercancel', up);
+}
+
+// The screen panel's width, kept for every page; double-click resets it.
+const SCREEN_W_KEY = 'emu.screenWidth';
+function setScreenWidth(px) {
+  document.documentElement.style.setProperty('--screen-w', px ? `${px}px` : '');
+}
+try { setScreenWidth(Number(localStorage.getItem(SCREEN_W_KEY)) || 0); } catch (_) {}
+(() => {
+  const handle = document.getElementById('screen-resize');
+  let width = 0;
+  handle.onpointerdown = (e) => dragHandle(handle, e, (ev) => {
+    width = Math.round(Math.min(Math.max(window.innerWidth - ev.clientX, 240), window.innerWidth - 360));
+    setScreenWidth(width);
+  }, () => { try { localStorage.setItem(SCREEN_W_KEY, String(width)); } catch (_) {} });
+  handle.ondblclick = () => {
+    setScreenWidth(0);
+    try { localStorage.removeItem(SCREEN_W_KEY); } catch (_) {}
+  };
+})();
+
 let toastTimer;
 function toast(text) {
   els.toast.textContent = text;
