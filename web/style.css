@@ -312,6 +312,8 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .chip.on { background: #2ea04333; color: var(--system); }
 .chip.off { background: #30363d; color: var(--muted); }
 .chip.warn { background: #9e6a0033; color: #e3b341; }
+.chip.bad { background: #f8514926; color: var(--error); }
+.chip.plain { background: #2f81f71f; color: #a5c8ff; }
 .count-hot { color: #e3b341; font-weight: 600; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
 .seg button { border: none; border-radius: 0; padding: 2px 9px; font-size: 11px; background: none; color: var(--muted); }
@@ -319,3 +321,5 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .seg button.on { background: var(--accent); color: #fff; }
 .ext-block .diff-view { flex: 1; min-height: 0; }
 .ext-block .blk-head .plus, .ext-block .blk-head .minus { font-size: 11px; }
+.ext-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
+.ext-empty[hidden] { display: none; }

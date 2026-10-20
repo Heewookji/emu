@@ -2201,9 +2201,10 @@ Future<int> _blockCmd(List<String> args) async {
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>] [--json]\n'
-      '   What a list or diff block of a dashboard page shows: the rows its command\n'
-      '   prints, as a table, or its diff. --select fills {{selected.<col>}} the way\n'
-      '   picking a row in the dashboard does; --seg picks a diff\'s segment.';
+      '   What a list, diff or html block of a dashboard page shows: the rows its\n'
+      '   command prints as a table, its diff, or an html block\'s data. --select\n'
+      '   fills {{selected.<col>}} the way picking a row in the dashboard does;\n'
+      '   --seg picks a diff\'s segment.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final target = res.rest.length == 1 ? res.rest.first : '';
@@ -2241,6 +2242,11 @@ Future<int> _blockCmd(List<String> args) async {
   if (!ok) {
     stderr.writeln('✗ ${r['error']}${r['needs'] == 'selected' ? ' (--select <col>=<value>)' : ''}');
     return 1;
+  }
+  if (r['kind'] == 'html') {
+    final data = r['data'];
+    print(data == null ? (r['text'] ?? '(no data)') : const JsonEncoder.withIndent('  ').convert(data));
+    return 0;
   }
   if (r['kind'] == 'diff') {
     final patch = '${r['patch'] ?? ''}';

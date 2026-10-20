@@ -308,6 +308,49 @@ class DiffBlock extends PageBlock {
       };
 }
 
+/// A project HTML file in a sandboxed frame, for what lists and diffs can't
+/// show (a value tree, an image preview). The frame gets [run]'s output as
+/// data and may ask the dashboard to run the toolbar items in [actions] —
+/// nothing else: no network, no access to the dashboard.
+class HtmlBlock extends PageBlock {
+  const HtmlBlock({
+    required super.id,
+    super.area = 'main',
+    super.watch,
+    required this.title,
+    required this.src,
+    this.run,
+    this.actions = const [],
+  });
+
+  final String title;
+
+  /// Project-relative path of a self-contained HTML file.
+  final String src;
+
+  /// Prints the frame's data (JSON, or any text); null: the frame gets none.
+  final PageCommand? run;
+
+  /// Toolbar items the frame may run (`postMessage({type: 'emu:action', id})`).
+  final List<String> actions;
+
+  @override
+  PageCommand? get command => run;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'kind': 'html',
+        'id': id,
+        'area': area,
+        'title': title,
+        'src': src,
+        'command': ?run?.display,
+        'uses': run?.placeholders.toList() ?? const [],
+        'actions': actions,
+        'watch': watch,
+      };
+}
+
 class DashboardPage {
   const DashboardPage({required this.id, required this.title, this.toolbar = const [], this.blocks = const []});
 
@@ -342,11 +385,13 @@ class PagesConfig {
 
   DashboardPage? page(String id) => pages.where((p) => p.id == id).firstOrNull;
 
-  /// Blocks to fetch again because [relPath] (project-relative) changed:
-  /// page id → block ids.
+  /// Blocks to fetch again because [relPath] (project-relative) changed —
+  /// a `watch:` match, or an html block's own file: page id → block ids.
   Map<String, List<String>> watching(String relPath) => {
         for (final page in pages)
-          if (page.blocks.where((b) => b.watch.any((g) => globToRegExp(g).hasMatch(relPath))).toList()
+          if (page.blocks
+                  .where((b) => b.watch.any((g) => globToRegExp(g).hasMatch(relPath)) || (b is HtmlBlock && b.src == relPath))
+                  .toList()
               case final blocks when blocks.isNotEmpty)
             page.id: [for (final b in blocks) b.id],
       };
@@ -420,6 +465,13 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
     final makesSelection = entry.$1 == 'list' && !listSeen;
     final block = _parseBlock(entry, '$id.blocks[$j]', claim, problems, makesSelection: makesSelection);
     if (block is ListBlock) listSeen = true;
+    if (block is HtmlBlock) {
+      final unknown = block.actions.where((a) => toolbar.whereType<PageAction>().every((i) => i.id != a)).toList();
+      if (unknown.isNotEmpty) {
+        problems.add('$id.${block.id}.actions: no toolbar action ${unknown.map((a) => '"$a"').join(', ')} on this page');
+        continue;
+      }
+    }
     if (block != null) blocks.add(block);
   }
   return DashboardPage(id: id, title: '${raw['title'] ?? id}', toolbar: toolbar, blocks: blocks);
@@ -490,14 +542,14 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
 PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?, String) claim,
     List<String> problems, {required bool makesSelection}) {
   final (kind, m) = entry;
-  if (kind != 'output' && kind != 'list' && kind != 'diff') {
-    problems.add('$at: unknown block "$kind" (list, diff, output)');
+  if (!const {'output', 'list', 'diff', 'html'}.contains(kind)) {
+    problems.add('$at: unknown block "$kind" (list, diff, html, output)');
     return null;
   }
   final id = claim(m['id'] ?? kind, at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' => 'main', _ => 'bottom' }}';
+  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' => 'main', _ => 'bottom' }}';
   if (!blockAreas.contains(area)) {
     problems.add('$where: area must be left, main or bottom (got "$area")');
     return null;
@@ -513,6 +565,21 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   final watch = _watch(m['watch'], '$where.watch', problems);
   if (watch == null) return null;
   final title = '${m['title'] ?? id}';
+  if (kind == 'html') {
+    final src = m['src'];
+    if (src is! String || !_projectRelative(src) || !src.toLowerCase().endsWith('.html')) {
+      problems.add('$where.src: expected a project-relative .html file (got "${src ?? ''}")');
+      return null;
+    }
+    final run = m['run'] == null ? null : _command(m['run'], '$where.run', const _Allowed(), problems);
+    if (m['run'] != null && run == null) return null;
+    final actions = m['actions'] == null ? const <String>[] : _strings(m['actions']);
+    if (actions == null) {
+      problems.add('$where.actions: expected a list of toolbar action ids');
+      return null;
+    }
+    return HtmlBlock(id: id, area: area, watch: watch, title: title, src: src, run: run, actions: actions);
+  }
   if (kind == 'diff') {
     final segments = m['segments'] == null ? const <String>[] : _strings(m['segments']);
     if (segments == null) {
@@ -610,10 +677,12 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
 
 List<String>? _strings(Object? v) => v is List && v.every((e) => e is String) ? v.cast<String>() : null;
 
+bool _projectRelative(String path) => path.isNotEmpty && !path.startsWith('/') && !path.split('/').contains('..');
+
 List<String>? _watch(Object? v, String at, List<String> problems) {
   if (v == null) return const [];
   final globs = v is String ? [v] : _strings(v);
-  if (globs == null || globs.any((g) => g.isEmpty || g.startsWith('/') || g.split('/').contains('..'))) {
+  if (globs == null || globs.any((g) => !_projectRelative(g))) {
     problems.add('$at: expected project-relative globs like "templates/**"');
     return null;
   }

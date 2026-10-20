@@ -805,6 +805,7 @@ pages:
 |-------|--------------------|----------|
 | `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
 | `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
+| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
 | `output` | — | The page's last run: command, exit code, time, output |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
@@ -812,11 +813,31 @@ pages:
   They work only in `[program, arg, …]` commands, and each value stays inside its own
   argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
   is never run. A shell-string command with a placeholder is a config error.
+- Chip colors follow common state words (`on`/`off`, `changed`, `error` …); any other value
+  is neutral.
 - An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`
   item shows the command with the values filled in.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row and segment are remembered
   per browser.
+- An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
+  frame with its own opaque origin and no network (`default-src 'none'`): it can't read the
+  dashboard, the session token or other blocks. Its data arrives by `postMessage` as
+  `{type: "emu:data", ok, data, text, error, needs, selected}` after it loads and on every
+  refresh (post `{type: "emu:ready"}` to ask again). It runs a toolbar action by posting
+  `{type: "emu:action", id}` — only ids listed in `actions:`, with the same confirmation as
+  the button. Saving the file reloads the frame.
+
+  ```html
+  <!doctype html>
+  <pre id="out"></pre>
+  <script>
+    addEventListener('message', (e) => {
+      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
+    });
+    parent.postMessage({ type: 'emu:ready' }, '*');
+  </script>
+  ```
 
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.

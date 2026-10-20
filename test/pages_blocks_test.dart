@@ -28,6 +28,21 @@ pages:
       - list:
           id: broken
           run: [./tool/t.sh, notjson]
+      - html:
+          id: tree
+          src: tool/tree.html
+          run: [./tool/t.sh, value, "{{selected.name}}"]
+          actions: [publish]
+      - html:
+          id: plain
+          src: tool/tree.html
+          run: [./tool/t.sh, notjson]
+      - html:
+          id: help
+          src: tool/help.html
+      - html:
+          id: escape
+          src: tool/link.html
 ''';
 
 const _script = r'''#!/bin/sh
@@ -36,6 +51,7 @@ case "$1" in
   diff) printf -- '--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-old %s\n+new %s\n' "$2" "$2" "$3" "$3" ;;
   args) shift; for a in "$@"; do echo "[$a]"; done ;;
   notjson) echo "rows: 2" ;;
+  value) echo "{\"key\": \"$2\", \"value\": {\"title\": \"Hello\", \"items\": [1, 2]}}" ;;
 esac
 ''';
 
@@ -50,6 +66,12 @@ void main() {
       ..createSync(recursive: true)
       ..writeAsStringSync(_script);
     Process.runSync('chmod', ['+x', script.path]);
+    File('${root.path}/tool/tree.html').writeAsStringSync('<!doctype html><p>tree</p>');
+    File('${root.path}/outside.html').writeAsStringSync('secret');
+    final outside = Directory.systemTemp.createTempSync('emu_outside_');
+    File('${outside.path}/x.html').writeAsStringSync('outside the project');
+    Link('${root.path}/tool/link.html').createSync('${outside.path}/x.html');
+    addTearDown(() => outside.deleteSync(recursive: true));
     api = PagesApi(
       projectRoot: root.path,
       home: root.path,
@@ -137,11 +159,45 @@ void main() {
   test('unknown blocks and row actions say what exists', () async {
     var (code, j) = await call('GET', '/api/pages/tpl/blocks/nope');
     expect(code, 404);
-    expect(j['error'], contains('items, changes, broken'));
+    expect(j['error'], contains('items, changes, broken, tree, plain, help, escape'));
     (code, _) = await call('POST', '/api/pages/tpl/rows/items/nope', {});
     expect(code, 404);
     (code, _) = await call('POST', '/api/pages/tpl/rows/changes/check', {});
     expect(code, 404); // a diff has no row buttons
+  });
+
+  test("an html block's data: JSON as a value, other text as text, none without run", () async {
+    var (_, j) = await call('GET', '/api/pages/tpl/blocks/tree?selected.name=card');
+    expect(j['ok'], isTrue);
+    expect(j['kind'], 'html');
+    expect(j['data'], {'key': 'card', 'value': {'title': 'Hello', 'items': [1, 2]}});
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/tree');
+    expect(j['needs'], 'selected');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/plain');
+    expect(j['data'], isNull);
+    expect(j['text'], 'rows: 2\n');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/help');
+    expect(j, {'ok': true, 'kind': 'html', 'data': null});
+  });
+
+  test("an html block's file comes from the project, never through a link out of it", () async {
+    var (code, j) = await call('GET', '/api/pages/tpl/frames/tree');
+    expect(code, 200);
+    expect(j['html'], '<!doctype html><p>tree</p>');
+
+    (_, j) = await call('GET', '/api/pages/tpl/frames/help');
+    expect(j['ok'], isFalse);
+    expect(j['error'], contains('cannot read tool/help.html'));
+
+    (_, j) = await call('GET', '/api/pages/tpl/frames/escape');
+    expect(j['ok'], isFalse);
+    expect(j['error'], contains('leads outside the project'));
+
+    (code, _) = await call('GET', '/api/pages/tpl/frames/items');
+    expect(code, 404); // a list has no frame
   });
 
   test('watching maps changed paths to the blocks to fetch again', () {

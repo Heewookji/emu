@@ -193,6 +193,42 @@ void main() {
       expect(c.page('p')!.blocks, isEmpty);
     });
 
+    test('an html block: a project .html file, optional data, declared actions only', () {
+      final c = parse(
+        [
+          {
+            'html': {
+              'id': 'tree',
+              'src': 'tool/pages/tree.html',
+              'run': ['./tool/config', 'value', '{{selected.key}}', '--json'],
+              'actions': ['sync'],
+            },
+          },
+          {'html': {'id': 'static', 'src': 'tool/pages/help.html'}},
+          {'html': {'id': 'abs', 'src': '/etc/passwd.html'}},
+          {'html': {'id': 'up', 'src': '../other/x.html'}},
+          {'html': {'id': 'notes', 'src': 'notes.md'}},
+          {'html': {'id': 'ghost', 'src': 'x.html', 'actions': ['deploy']}},
+        ],
+        toolbar: [
+          {'action': {'id': 'sync', 'run': ['./tool/config', 'sync']}},
+        ],
+      );
+      final page = c.page('p')!;
+      final tree = page.block('tree') as HtmlBlock;
+      expect(tree.area, 'main');
+      expect(tree.run!.placeholders, {'selected.key'});
+      expect(tree.actions, ['sync']);
+      expect((page.block('static') as HtmlBlock).run, isNull);
+      expect(page.blocks.map((b) => b.id), ['tree', 'static']);
+      final all = c.problems.join('\n');
+      expect(all, contains('p.abs.src: expected a project-relative .html file'));
+      expect(all, contains('p.up.src: expected a project-relative .html file'));
+      expect(all, contains('p.notes.src: expected a project-relative .html file'));
+      expect(all, contains('p.ghost.actions: no toolbar action "deploy"'));
+      expect(c.watching('tool/pages/tree.html'), {'p': ['tree']}); // its own file reloads it
+    });
+
     test('watch globs match project-relative paths', () {
       bool m(String glob, String path) => globToRegExp(glob).hasMatch(path);
       expect(m('templates/**', 'templates/home.json'), isTrue);

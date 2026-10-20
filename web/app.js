@@ -758,7 +758,10 @@ function onPageWatch(msg) {
     const page = pageState.pages.find(p => p.id === pageId);
     if (!page) continue;
     const blocks = page.blocks.filter(b => ids.includes(b.id));
-    if (currentPage() === page) loadBlocks(page, blocks);
+    if (currentPage() === page) {
+      for (const b of blocks) if (b.kind === 'html') loadFrame(page, b); // its file may be what changed
+      loadBlocks(page, blocks);
+    }
     else for (const b of blocks) pageState.stale.add(blockKey(page, b));
   }
 }
@@ -781,6 +784,7 @@ function renderPageBody(page) {
       const el = blockEl(b);
       if (b.kind === 'list') initList(page, b, el);
       else if (b.kind === 'diff') initDiff(page, b, el);
+      else if (b.kind === 'html') initHtml(page, b, el);
     }
   }
   renderOutputs(page);
@@ -799,7 +803,7 @@ function loadBlocks(page, blocks) {
   const list = selectionList(page);
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
-    if ((b.kind !== 'list' && b.kind !== 'diff') || waiting.includes(b)) continue;
+    if (b.kind === 'output' || waiting.includes(b)) continue;
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
@@ -843,6 +847,7 @@ function renderBlockData(page, block) {
   if (currentPage() !== page) return;
   if (block.kind === 'list') renderListRows(page, block);
   else if (block.kind === 'diff') renderDiffView(page, block);
+  else if (block.kind === 'html') renderHtmlData(page, block);
 }
 
 // A block's status line when it has nothing (yet) to show.
@@ -880,10 +885,18 @@ function cellText(v) {
   return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v);
 }
 
+// A chip's color comes from common state words; anything else stays neutral.
+const CHIP_KINDS = [
+  ['on', /^(on|yes|true|ok|enabled|active|local)$/i],
+  ['off', /^(off|no|false|none|disabled|same|unchanged|remote)$/i],
+  ['warn', /^(changed|modified|diff|dirty|pending|outdated|behind|warn(ing)?)$/i],
+  ['bad', /^(error|failed|fail|invalid|missing|broken)$/i],
+];
+
 function cellHtml(v, format) {
   if (format === 'chip') {
     const s = typeof v === 'boolean' ? (v ? 'on' : 'off') : cellText(v);
-    const kind = v === true || /^(on|yes|true|ok)$/i.test(s) ? 'on' : !s || v === false || /^(off|no|false|none)$/i.test(s) ? 'off' : 'warn';
+    const kind = CHIP_KINDS.find(([, re]) => re.test(s))?.[0] || 'plain';
     return s ? `<span class="chip ${kind}">${escapeHtml(s)}</span>` : '';
   }
   if (format === 'count') {
@@ -1021,6 +1034,85 @@ function splitPatch(patch) {
   }
   return files.filter(f => f.lines.some(l => l.startsWith('@@'))).map(f => ({ ...f, patch: f.lines.join('\n') }));
 }
+
+// html: a project file in a sandboxed frame. It runs in an opaque origin
+// (no allow-same-origin) under a CSP with no network, gets its data by
+// postMessage ({type: 'emu:data', …}) and may ask for its declared toolbar
+// actions ({type: 'emu:action', id}) — which run like a button press,
+// confirmation included. The file arrives through the API and goes in as
+// srcdoc, so the session token never appears in a frame's URL.
+const FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+  + "img-src data: blob:; font-src data:; form-action 'none'";
+
+function initHtml(page, block, el) {
+  el.innerHTML = `<div class="blk-head"><span class="name">${escapeHtml(block.title)}</span>`
+    + `<span class="cmd" data-cmd></span><span class="meta muted" title="sandboxed: no network, no access to the dashboard">${escapeHtml(block.src)}</span></div>`
+    + `<div class="ext-empty" data-note hidden></div>`
+    + `<iframe class="ext-frame" sandbox="allow-scripts" referrerpolicy="no-referrer" title="${escapeHtml(block.title)}"></iframe>`;
+  el.querySelector('iframe').addEventListener('load', () => postFrameData(page, block));
+  loadFrame(page, block);
+}
+
+function withFrameCsp(html) {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">`;
+  const doctype = html.match(/^\s*<!doctype[^>]*>/i); // keep it first, or the frame drops to quirks mode
+  return doctype ? doctype[0] + meta + html.slice(doctype[0].length) : meta + html;
+}
+
+async function loadFrame(page, block) {
+  const el = blockEl(block);
+  if (!el) return;
+  let r;
+  try {
+    r = await (await api(`/api/pages/${encodeURIComponent(page.id)}/frames/${encodeURIComponent(block.id)}`)).json();
+  } catch (e) {
+    r = { ok: false, error: String(e) };
+  }
+  if (blockEl(block) !== el) return; // the page was re-rendered meanwhile
+  const note = el.querySelector('[data-note]');
+  note.hidden = r.ok;
+  if (!r.ok) { note.textContent = r.error || 'failed'; return; }
+  el.querySelector('iframe').srcdoc = withFrameCsp(r.html);
+}
+
+function renderHtmlData(page, block) {
+  const el = blockEl(block);
+  if (!el || currentPage() !== page) return;
+  const entry = pageState.data[blockKey(page, block)];
+  el.classList.toggle('loading', !!entry?.loading);
+  el.querySelector('[data-cmd]').textContent = entry?.result?.command || '';
+  if (!entry?.loading) postFrameData(page, block);
+}
+
+function postFrameData(page, block) {
+  const frame = blockEl(block)?.querySelector('iframe');
+  const r = pageState.data[blockKey(page, block)]?.result;
+  // The frame's origin is opaque, so '*' is the only target that reaches it.
+  frame?.contentWindow?.postMessage({
+    type: 'emu:data',
+    ok: r ? !!r.ok : null,
+    data: r?.data ?? null,
+    text: r?.text ?? null,
+    error: r && !r.ok ? r.error : null,
+    needs: r === null ? 'selected' : r?.needs ?? null,
+    selected: selectedRow(page),
+  }, '*');
+}
+
+window.addEventListener('message', (e) => {
+  const page = currentPage();
+  if (!page) return;
+  const block = page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe')?.contentWindow === e.source);
+  const msg = e.data;
+  if (!block || !msg || typeof msg !== 'object') return;
+  if (msg.type === 'emu:ready') postFrameData(page, block);
+  else if (msg.type === 'emu:action') {
+    const item = page.toolbar.find(i => i.kind === 'action' && i.id === msg.id);
+    if (!item || !block.actions.includes(item.id)) { toast(`${block.title}: action "${msg.id}" is not allowed`); return; }
+    runItem(page, item, itemKey(page, item),
+      `/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, runValues(page));
+  }
+});
 
 // output: the page's last run — what ran, how it ended, what it printed.
 function outputHtml(page) {

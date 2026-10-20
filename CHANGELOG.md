@@ -27,6 +27,12 @@
   `GET /api/pages/<page>/blocks/<block>`, `POST /api/pages/<page>/rows/<list>/<action>` (#24).
 - `emu block <page>.<block> [--select <col>=<value>]... [--seg <name>]` — list·diff 블록 내용을 CLI로.
   `emu run` 도 `--select` 로 툴바 항목의 `{{selected.<col>}}` 을 채운다 (#24).
+- 대시보드 페이지 블록 `html` — 프로젝트 HTML 파일(`src:`)을 sandbox iframe(`allow-scripts` 만, opaque
+  origin)에 `srcdoc` 으로 띄우고 `default-src 'none'` CSP 를 넣어 네트워크·대시보드·세션 토큰에 닿지 못하게
+  한다. 데이터는 `run:` 출력(JSON 은 값, 아니면 텍스트)을 `postMessage`(`emu:data`)로 받고, `actions:` 에
+  적은 툴바 액션만 `emu:action` 으로 요청할 수 있다(버튼과 같은 확인). 파일이 프로젝트 밖으로 이어지는
+  링크면 거부, 파일을 저장하면 frame 을 다시 띄운다. 서버 API `GET /api/pages/<page>/frames/<block>`.
+  list 의 chip 색은 흔한 상태 단어를 따르고 그 밖의 값은 중립색 (#24).
 
 ### Fixed
 - 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을

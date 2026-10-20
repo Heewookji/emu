@@ -744,16 +744,35 @@ pages:
 |------|--------------------|--------------|
 | `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
 | `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
+| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
 | `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
   그 행. `{{seg}}` — diff 의 세그먼트. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
   들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
   명령에 치환을 쓰면 설정 오류다.
+- chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
 - `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
   보여 준다.
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
   작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
+- `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
+  frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
+  데이터는 로드 뒤와 새로 고칠 때마다 `postMessage` 의 `{type: "emu:data", ok, data, text, error,
+  needs, selected}` 로 온다(다시 받으려면 `{type: "emu:ready"}` 를 보낸다). 툴바 액션은
+  `{type: "emu:action", id}` 를 보내 실행한다 — `actions:` 에 적은 id만, 버튼과 같은 확인을 거쳐.
+  파일을 저장하면 frame 이 다시 뜬다.
+
+  ```html
+  <!doctype html>
+  <pre id="out"></pre>
+  <script>
+    addEventListener('message', (e) => {
+      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
+    });
+    parent.postMessage({ type: 'emu:ready' }, '*');
+  </script>
+  ```
 
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.

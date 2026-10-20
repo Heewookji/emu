@@ -5,7 +5,8 @@
 /// - `GET  /api/pages/<page>/state/<item>`          a toggle's state (runs its `state` command)
 /// - `POST /api/pages/<page>/run/<item>`            run a toolbar item
 /// - `POST /api/pages/<page>/rows/<list>/<action>`  run a list's row button
-/// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows or a diff's patch
+/// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows, a diff's patch, an html block's data
+/// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 ///
 /// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}}`;
 /// GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
@@ -32,6 +33,9 @@ const _outputLimit = 256 * 1024;
 
 /// Rows a list block sends at most — a dashboard table, not a data export.
 const _rowLimit = 2000;
+
+/// Largest html block file served.
+const _frameLimit = 2 * 1024 * 1024;
 
 /// One finished run of a page command.
 class PageRun {
@@ -215,14 +219,18 @@ class PagesApi {
     switch ((parts[3], parts.length)) {
       case ('blocks', 5):
         final block = page.block(parts[4]);
-        if (block == null || block.command == null) {
+        if (block == null || block is OutputBlock) {
           return _json({
             'ok': false,
-            'error': 'no list or diff block "${parts[4]}" on page ${page.id} '
-                '(${page.blocks.where((b) => b.command != null).map((b) => b.id).join(', ')})',
+            'error': 'no list, diff or html block "${parts[4]}" on page ${page.id} '
+                '(${page.blocks.where((b) => b is! OutputBlock).map((b) => b.id).join(', ')})',
           }, status: 404);
         }
         return _json(await _blockData(page, block, placeholderValues(query: query)));
+      case ('frames', 5):
+        final block = page.block(parts[4]);
+        if (block is! HtmlBlock) return _json({'ok': false, 'error': 'no html block "${parts[4]}" on page ${page.id}'}, status: 404);
+        return _json(await _frame(block));
       case ('state', 5):
         final item = page.item(parts[4]);
         if (item is! PageToggle) return _json({'ok': false, 'error': 'no toggle "${parts[4]}" on page ${page.id}'}, status: 404);
@@ -343,10 +351,12 @@ class PagesApi {
     return {'ok': true, ...state};
   }
 
-  /// A list's rows or a diff's patch. Not a "run": nothing is logged or
-  /// broadcast, and a failure only shows in the block.
+  /// A list's rows, a diff's patch or an html block's data. Not a "run":
+  /// nothing is logged or broadcast, and a failure only shows in the block.
   Future<Map<String, dynamic>> _blockData(DashboardPage page, PageBlock block, Map<String, String> vars) async {
     final key = '${page.id}.${block.id}';
+    final kind = switch (block) { ListBlock() => 'list', DiffBlock() => 'diff', _ => 'html' };
+    if (block.command == null) return {'ok': true, 'kind': kind, 'data': null}; // an html block without run
     if (block is DiffBlock && block.segments.isNotEmpty) {
       final seg = vars['seg'] ??= block.segments.first;
       if (!block.segments.contains(seg)) {
@@ -361,7 +371,7 @@ class PagesApi {
     }
     final run = await execute(page.id, block.id, command, defaultTimeout);
     final base = {
-      'kind': block is ListBlock ? 'list' : 'diff',
+      'kind': kind,
       'command': command.display,
       'ms': run.elapsed.inMilliseconds,
       'seg': ?vars['seg'],
@@ -370,6 +380,14 @@ class PagesApi {
       return {'ok': false, ...base, 'error': '${run.error}: ${_clip(run.output)}'};
     }
     if (block is DiffBlock) return {'ok': true, ...base, 'patch': run.stdout};
+    if (block is HtmlBlock) {
+      // JSON goes to the frame as a value; anything else as text.
+      try {
+        return {'ok': true, ...base, 'data': jsonDecode(run.stdout)};
+      } on FormatException {
+        return {'ok': true, ...base, 'data': null, 'text': run.stdout};
+      }
+    }
     final rows = parseListRows(run.stdout);
     if (rows == null) {
       return {'ok': false, ...base, 'error': 'list command should print a JSON array of objects: ${_clip(run.stdout)}'};
@@ -380,6 +398,23 @@ class PagesApi {
       'rows': rows.length > _rowLimit ? rows.sublist(0, _rowLimit) : rows,
       if (rows.length > _rowLimit) 'truncated': rows.length,
     };
+  }
+
+  /// An html block's file, for the dashboard to put in its sandboxed frame.
+  Future<Map<String, dynamic>> _frame(HtmlBlock block) async {
+    try {
+      final file = File(p.join(projectRoot, block.src));
+      // The config names the file, not the request — but a symlink still
+      // must not lead out of the project.
+      if (!p.isWithin(Directory(projectRoot).resolveSymbolicLinksSync(), file.resolveSymbolicLinksSync())) {
+        return {'ok': false, 'error': '${block.src} leads outside the project'};
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.length > _frameLimit) return {'ok': false, 'error': '${block.src} is over 2 MB'};
+      return {'ok': true, 'src': block.src, 'html': utf8.decode(bytes, allowMalformed: true)};
+    } on FileSystemException catch (e) {
+      return {'ok': false, 'error': 'cannot read ${block.src}: ${e.osError?.message ?? e.message}'};
+    }
   }
 
   /// Run [command] in the project root, output captured, killed after
