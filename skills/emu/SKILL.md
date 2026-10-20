@@ -84,7 +84,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `adb shell am start`, iOS는 `xcrun simctl openurl`). `&` 등 쿼리스트링
      특수문자를 따로 이스케이프할 필요 없다. Android는 `adb shell` 이 argv 경계를
      보존하지 않고 기기 셸에 넘기므로, URL을 기기 셸용으로 인용해서 보낸다.
-     - 웹뷰 딥링크처럼 URL을 쿼리 파라미터에 싣는 경우(`szsapp://web?url=...`)
+     - 웹뷰 딥링크처럼 URL을 쿼리 파라미터에 싣는 경우(`myapp://web?url=...`)
        **그 값은 호출자가 percent-encoding 해야 한다.** emu는 문자열을 있는 그대로
        전달할 뿐이다. 인코딩하지 않으면 셸이 아니라 URI 파서 단계에서 잘린다 —
        `url=https://x.co/p?a=1&b=2` 는 앱에서 `url=https://x.co/p?a=1` 과
