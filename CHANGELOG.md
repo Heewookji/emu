@@ -17,7 +17,8 @@
   `emu.yaml` 은 요청마다 다시 읽고, 파일이 바뀌면 대시보드가 새로 고친다. 서버 API `GET /api/pages`,
   `GET /api/pages/<page>/state/<item>`, `POST /api/pages/<page>/run/<item>` (#24).
 - `emu pages`, `emu run <page>.<item> [on|off] [--yes]` — 같은 항목을 CLI로. 종료코드 0 = 명령과 `then:`
-  이 성공 (#24).
+  이 성공, 명령이 실패하면 그 명령의 종료코드. on/off 없이 토글을 주면 현재 상태를 보여 준다.
+  `emu pages` 는 세션이 없어도 `emu.yaml` 을 직접 읽어 보여 준다 (#24).
 - 대시보드 페이지 블록 `list`·`diff` — `list` 는 명령이 출력한 JSON 배열을 표로(열 형식 `text`·`chip`·
   `count`, 필터, 행마다 `rowActions` 버튼), `diff` 는 명령이 출력한 unified diff를 Changes 탭처럼
   보여 준다(`segments` 로 비교 기준 전환). 페이지의 첫 list 에서 고른 행이 `{{selected.<col>}}`, 행 버튼의
@@ -44,6 +45,8 @@
 - 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을
   닫다가 예외가 나 `exit` 에 이르지 못했고, 서버(포트)와 `flutter run` 이 그대로 남았다. 이제
   소켓을 모두 닫고(응답 없는 소켓은 2초까지 기다림) 종료한다.
+- 페이지 명령이 `timeout` 에 걸리면 직접 띄운 프로세스만 끊겨, `sh -c 'a | b'` 나 빌드를 띄우는
+  스크립트의 자손 프로세스는 계속 돌던 문제 — 이제 자손까지 모두 끊는다.
 
 ### Security
 - 서버 API를 이 세션의 대시보드와 CLI로 제한 — 지금까지는 API가 인증 없이
@@ -53,7 +56,8 @@
   WebSocket·이미지는 `token` 쿼리)이 있어야 처리한다. 생존 확인용 `GET /api/status` 만 예외. `Host` 가
   `127.0.0.1`/`localhost` 가 아니거나(DNS rebinding) 브라우저 `Origin` 이 대시보드 자신이 아니면 거부하고,
   CORS 헤더를 없앴다. 대시보드 페이지는 캐시하지 않고 다른 사이트의 frame 안에 뜨지 않는다. 서버가 다시
-  뜨면(새 토큰) 열려 있던 대시보드는 스스로 새로 고친다 (#24).
+  뜨면(새 토큰) 열려 있던 대시보드는 스스로 새로 고친다. 대시보드 페이지는 `Referrer-Policy: no-referrer`
+  로 내려가 링크를 따라가도 토큰이 담긴 주소가 새지 않는다 (#24).
 
 ## [0.11.0] - 2026-10-19
 

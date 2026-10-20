@@ -2088,10 +2088,21 @@ Future<int> _diffCmd(List<String> args) async {
 Future<int> _pagesCmd(List<String> args) async {
   final bad = _checkArgs(args, 'usage: emu pages [--json]   (dashboard pages declared in emu.yaml)');
   if (bad != null) return bad;
-  final info = _requireServer();
-  final data = await _getJson(info, '/api/pages');
-  if (data == null || data['pages'] is! List) {
-    stderr.writeln('✗ pages: ${data?['error'] ?? 'no response from the server'}');
+  // With no session (or a dead one), read emu.yaml directly — so an agent can
+  // check its edit before `emu up`. No profile then: the session's is unknown.
+  final session = Session.require();
+  final info = session.readServerInfo();
+  var data = info == null ? null : await _getJson(info, '/api/pages');
+  if (data == null) {
+    final warnings = <String>[];
+    final parsed = parsePages(loadProjectConfig(session.projectRoot.path, onWarn: warnings.add).pages);
+    data = {
+      'pages': [for (final page in parsed.pages) page.toJson()],
+      'problems': [...warnings, ...parsed.problems],
+    };
+  }
+  if (data['pages'] is! List) {
+    stderr.writeln('✗ pages: ${data['error'] ?? 'no response from the server'}');
     return 1;
   }
   if (args.contains('--json')) {
@@ -2145,8 +2156,9 @@ Future<int> _runCmd(List<String> args) async {
       '   button or a form\'s button, the same as pressing it in the dashboard. A\n'
       '   toggle takes on or off; an action marked confirm: true runs only with\n'
       '   --yes. --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
-      '   {{input.<field>}}. Exit 0 = the command and its then: reload/restart\n'
-      '   succeeded. `emu pages` lists the items.';
+      '   {{input.<field>}}. A toggle without on|off prints its state. Exit 0 =\n'
+      '   the command and its then: reload/restart succeeded; a failed command\n'
+      '   exits with its own code. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final rest = res.rest;
@@ -2171,6 +2183,28 @@ Future<int> _runCmd(List<String> args) async {
   }
   final info = _requireServer();
   final page = Uri.encodeComponent(target[0]);
+  if (target.length == 2 && onOff == null) {
+    // A toggle with no on/off: say where it stands instead of refusing.
+    final pages = await _getJson(info, '/api/pages');
+    final item = [
+      for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
+        if (p['id'] == target[0]) ...(p['toolbar'] as List).cast<Map<String, dynamic>>(),
+    ].where((i) => i['id'] == target[1]).firstOrNull;
+    if (item?['kind'] == 'toggle') {
+      final q = {for (final e in selected.entries) 'selected.${e.key}': e.value};
+      final s = await _getJson(info,
+          '/api/pages/$page/state/${Uri.encodeComponent(target[1])}${q.isEmpty ? '' : '?${Uri(queryParameters: q).query}'}');
+      if (res.flag('json')) {
+        print(jsonEncode(s ?? {'ok': false, 'error': 'no response from the server'}));
+      } else if (s?['ok'] == true) {
+        print('${rest.first}: ${s!['on'] == true ? 'on' : 'off'}${s['detail'] != null ? ' (${s['detail']})' : ''}'
+            '   (emu run ${rest.first} on|off to flip it)');
+      } else {
+        stderr.writeln('✗ ${rest.first}: ${s?['error'] ?? 'no response from the server'}');
+      }
+      return s?['ok'] == true ? 0 : 1;
+    }
+  }
   String path;
   if (target.length == 2) {
     path = '/api/pages/$page/run/${Uri.encodeComponent(target[1])}';
@@ -2207,9 +2241,13 @@ Future<int> _runCmd(List<String> args) async {
     return 1;
   }
   final ok = r['ok'] == true;
+  // The command's own exit code when it failed; 1 for anything else (a
+  // timeout, a failed then:, a refusal).
+  final exitCode = r['exitCode'];
+  final exit = ok ? 0 : (exitCode is int && exitCode > 0 && exitCode < 256 ? exitCode : 1);
   if (res.flag('json')) {
     print(jsonEncode(r));
-    return ok ? 0 : 1;
+    return exit;
   }
   if (r['needsConfirm'] == true) {
     stderr.writeln('✗ ${rest.first} asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
@@ -2239,7 +2277,7 @@ Future<int> _runCmd(List<String> args) async {
   } else {
     stderr.writeln(line);
   }
-  return ok ? 0 : 1;
+  return exit;
 }
 
 Future<int> _blockCmd(List<String> args) async {

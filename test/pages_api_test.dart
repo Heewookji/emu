@@ -184,6 +184,16 @@ void main() {
     expect(j['ms'], lessThan(4000));
   });
 
+  test('a timeout also kills what the command spawned', () async {
+    final marker = 'emu-killtree-${DateTime.now().microsecondsSinceEpoch}';
+    final run = await api.execute('tools', 'x', PageCommand.shell('sh -c "sleep 30; : $marker" | cat'),
+        const Duration(milliseconds: 300));
+    expect(run.timedOut, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final left = await Process.run('pgrep', ['-f', marker]);
+    expect('${left.stdout}'.trim(), isEmpty, reason: 'orphaned grandchild still running');
+  });
+
   test('a program that is not there is reported, not thrown', () async {
     final (code, j) = await run('missing');
     expect(code, 200);

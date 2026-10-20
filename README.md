@@ -879,6 +879,7 @@ pages:
 emu pages                          # pages, items and blocks (--json available)
 emu run templates.sync             # same as pressing the button: its output, then a result line
 emu run templates.local on         # a toggle takes on/off
+emu run templates.local            # …or nothing, to print where it stands
 emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
 emu run links.routes.open --row route=home        # a row button, as if pressed on that row
 emu run links.link.open --input url=myapp://home   # a form button with what's typed
@@ -886,7 +887,9 @@ emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```
 
-`emu run` exits 0 when the command and its `then:` reload/restart succeeded.
+`emu run` exits 0 when the command and its `then:` reload/restart succeeded, and with the
+command's own exit code when it failed. `emu pages` works without a session too: it then reads
+`emu.yaml` directly, so a config edit can be checked before `emu up`.
 
 ## How it works
 
