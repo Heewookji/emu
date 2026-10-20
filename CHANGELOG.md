@@ -6,6 +6,55 @@
 
 ## [Unreleased]
 
+### Added
+- 대시보드 페이지 — `emu.yaml` 의 `pages:` 로 프로젝트 도구(로컬 템플릿 전환, 검증, 배포 등)를 대시보드
+  탭으로 붙인다. 페이지는 툴바(`action` 버튼·`toggle` 스위치)와 블록(`output`: 마지막 실행 결과)으로
+  이뤄지고, emu 는 설정에 적힌 명령만 실행한다(요청은 항목 id만 보낸다). 명령은 argv 배열(직접 실행) 또는
+  문자열(`sh -c`)이고, 프로젝트 루트에서 `EMU_PROJECT`·`EMU_PORT`·`EMU_DEVICE`·`EMU_PLATFORM`·`EMU_APP_ID`
+  와 함께 실행되며 `timeout`(기본 60초)이 지나면 끊긴다. `then: reload|restart`, `confirm: true`(명령을
+  보여 주고 묻기), 같은 항목 동시 실행 방지. 토글 상태는 `state` 명령이 출력한 `{"on": bool, "detail"?}`.
+  앱 제어와 기기 화면은 모든 페이지에 그대로 있다. 실행은 열린 대시보드 모두와 Logs 탭(`[ext]`)에 남는다.
+  `emu.yaml` 은 요청마다 다시 읽고, 파일이 바뀌면 대시보드가 새로 고친다. 서버 API `GET /api/pages`,
+  `GET /api/pages/<page>/state/<item>`, `POST /api/pages/<page>/run/<item>` (#24).
+- `emu pages`, `emu run <page>.<item> [on|off] [--yes]` — 같은 항목을 CLI로. 종료코드 0 = 명령과 `then:`
+  이 성공 (#24).
+- 대시보드 페이지 블록 `list`·`diff` — `list` 는 명령이 출력한 JSON 배열을 표로(열 형식 `text`·`chip`·
+  `count`, 필터, 행마다 `rowActions` 버튼), `diff` 는 명령이 출력한 unified diff를 Changes 탭처럼
+  보여 준다(`segments` 로 비교 기준 전환). 페이지의 첫 list 에서 고른 행이 `{{selected.<col>}}`, 행 버튼의
+  행이 `{{row.<col>}}`, 세그먼트가 `{{seg}}` 를 채운다. 치환은 argv 배열 명령에서만 되고 값은 인자 하나로만
+  들어간다(셸 문자열 명령의 치환은 설정 오류). `watch:` 글롭에 맞는 파일이 바뀌면 블록을 다시 불러온다
+  (git 이 무시하는 폴더 포함). 고른 행·세그먼트는 브라우저에 기억. 서버 API
+  `GET /api/pages/<page>/blocks/<block>`, `POST /api/pages/<page>/rows/<list>/<action>` (#24).
+- `emu block <page>.<block> [--select <col>=<value>]... [--seg <name>]` — list·diff 블록 내용을 CLI로.
+  `emu run` 도 `--select` 로 툴바 항목의 `{{selected.<col>}}` 을 채운다 (#24).
+- 대시보드 페이지 블록 `html` — 프로젝트 HTML 파일(`src:`)을 sandbox iframe(`allow-scripts` 만, opaque
+  origin)에 `srcdoc` 으로 띄우고 `default-src 'none'` CSP 를 넣어 네트워크·대시보드·세션 토큰에 닿지 못하게
+  한다. 데이터는 `run:` 출력(JSON 은 값, 아니면 텍스트)을 `postMessage`(`emu:data`)로 받고, `actions:` 에
+  적은 툴바 액션만 `emu:action` 으로 요청할 수 있다(버튼과 같은 확인). 파일이 프로젝트 밖으로 이어지는
+  링크면 거부, 파일을 저장하면 frame 을 다시 띄운다. 서버 API `GET /api/pages/<page>/frames/<block>`.
+  list 의 chip 색은 흔한 상태 단어를 따르고 그 밖의 값은 중립색 (#24).
+- 대시보드 페이지 블록 `form` — 입력 칸(`fields`)과 그 값을 `{{input.<field>}}` 로 읽는 버튼(`actions`).
+  입력값은 브라우저에 기억하고, Enter 는 첫 버튼. 액션은 `run:` 대신 `openUrl:` 로 기기에 딥링크를 열 수
+  있다 — 대시보드 딥링크 입력·`emu open-url` 과 같은 경로(argv, 기기 셸 인용, settle)를 쓰고 끝나면 화면을
+  새로 고친다. 서버 API `POST /api/pages/<page>/forms/<form>/<action>` (#24).
+- `emu run <page>.<block>.<action> [--row <col>=<value>]... [--input <field>=<value>]...` — list 행 버튼과
+  form 버튼을 CLI로. `emu pages` 에 form 칸·버튼 표시 (#24).
+
+### Fixed
+- 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을
+  닫다가 예외가 나 `exit` 에 이르지 못했고, 서버(포트)와 `flutter run` 이 그대로 남았다. 이제
+  소켓을 모두 닫고(응답 없는 소켓은 2초까지 기다림) 종료한다.
+
+### Security
+- 서버 API를 이 세션의 대시보드와 CLI로 제한 — 지금까지는 API가 인증 없이
+  `Access-Control-Allow-Origin: *` 로 열려 있어, 브라우저에 열린 아무 웹 페이지나 `127.0.0.1:4577` 로
+  reload·tap·`shutdown` 등을 보내고 응답을 읽을 수 있었다. 이제 서버가 시작할 때마다 세션 토큰을 만들어
+  `.emu/server.json`(CLI)과 대시보드 페이지에 넣고, `/api/` 요청은 토큰(`X-Emu-Token` 헤더,
+  WebSocket·이미지는 `token` 쿼리)이 있어야 처리한다. 생존 확인용 `GET /api/status` 만 예외. `Host` 가
+  `127.0.0.1`/`localhost` 가 아니거나(DNS rebinding) 브라우저 `Origin` 이 대시보드 자신이 아니면 거부하고,
+  CORS 헤더를 없앴다. 대시보드 페이지는 캐시하지 않고 다른 사이트의 frame 안에 뜨지 않는다. 서버가 다시
+  뜨면(새 토큰) 열려 있던 대시보드는 스스로 새로 고친다 (#24).
+
 ## [0.11.0] - 2026-10-19
 
 ### Added

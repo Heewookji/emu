@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="emu-token" content="__EMU_SESSION_TOKEN__" />
   <title>emu — Flutter debug</title>
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -11,6 +12,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><img src="favicon.png" alt="" class="brand-icon" />emu<span class="dot" id="conn-dot" title="disconnected"></span></div>
+    <nav class="pages" id="page-tabs" hidden></nav>
     <div class="status" id="status">
       <span class="pill" id="state-pill">stopped</span>
       <span id="device-name" class="muted"></span>
@@ -25,7 +27,7 @@
     </div>
   </header>
 
-  <div class="toolbar">
+  <div class="toolbar" id="debug-toolbar">
     <div class="tabs">
       <button class="tab active" data-tab="logs">Logs</button>
       <button class="tab" data-tab="changes" id="tab-changes" hidden>Changes<span class="badge" id="diff-badge"></span></button>
@@ -61,12 +63,15 @@
     </div>
   </div>
 
+  <div class="pagebar" id="pagebar" hidden></div>
+
   <div class="workspace">
     <main id="log" class="log"></main>
     <div class="changes" id="changes" hidden>
       <nav class="file-list" id="diff-files"></nav>
       <section class="diff-view" id="diff-view"></section>
     </div>
+    <div class="ext-page" id="ext-page" hidden></div>
     <aside class="screen" id="screen">
       <div class="screen-head">
         <span>screen</span>
@@ -95,6 +100,21 @@
   </div>
 
   <div class="actionbar" id="toast" hidden></div>
+
+  <div class="modal-dim" id="confirm-dim" hidden></div>
+  <div class="modal" id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="modal-head" id="confirm-title"></div>
+    <div class="modal-body">
+      <div class="muted">runs in the project root:</div>
+      <pre id="confirm-cmd"></pre>
+      <div class="muted" id="confirm-then"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button id="confirm-cancel">Cancel</button>
+      <button id="confirm-run" class="run">Run</button>
+    </div>
+  </div>
 
   <script src="vendor/lottie_light.min.js"></script>
   <script src="app.js"></script>
