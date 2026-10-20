@@ -724,6 +724,7 @@ to its starting state is the leak signal this is built to catch.
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
   refresh periodically. The first screenshot loads on its own once the app is running.
+  Drag the panel's left edge to widen it (kept in the browser; double-click to reset).
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
@@ -799,7 +800,7 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom) |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|

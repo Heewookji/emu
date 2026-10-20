@@ -34,6 +34,7 @@ const pageState = {
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
+  sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -43,10 +44,11 @@ try {
   if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
+  if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
 } catch (_) {}
 function savePagePrefs() {
   try {
-    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg, input: pageState.input }));
+    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg, input: pageState.input, sizes: pageState.sizes }));
   } catch (_) {}
 }
 
@@ -287,7 +289,57 @@ function renderPageBody(page) {
       else if (b.kind === 'form') initForm(page, b, el);
     }
   }
+  addResizers(page, areas);
   renderOutputs(page);
+}
+
+// ---- panel sizes ---------------------------------------------------------------
+// A handle on the left area's right edge and one on the bottom area's top edge.
+// Sizes are kept per page as a share of the page body, so they survive a
+// window resize; a double-click puts the default back.
+
+const MIN_PANEL = 120; // px any area keeps while dragging
+
+function applySizes(page) {
+  const size = pageState.sizes[page.id] || {};
+  const body = pageEls.body;
+  body.style.setProperty('--ext-left', size.left ? `${size.left}%` : '');
+  body.style.setProperty('--ext-bottom', size.bottom ? `${size.bottom}%` : '');
+  body.classList.toggle('sized-bottom', !!size.bottom);
+}
+
+function addResizers(page, areas) {
+  applySizes(page);
+  const body = pageEls.body;
+  const hasRight = areas.main.length || areas.bottom.length;
+  if (areas.left.length && hasRight) addResizer(page, body.querySelector('[data-area="left"]'), 'col');
+  if (areas.bottom.length && areas.main.length) addResizer(page, body.querySelector('[data-area="bottom"]'), 'row');
+}
+
+function addResizer(page, host, axis) {
+  const handle = document.createElement('div');
+  handle.className = `ext-resize ${axis}`;
+  handle.title = 'Drag to resize · double-click to reset';
+  host.appendChild(handle);
+  const key = axis === 'col' ? 'left' : 'bottom';
+  handle.onpointerdown = (e) => {
+    const box = pageEls.body.getBoundingClientRect();
+    dragHandle(handle, e, (ev) => {
+      const pct = axis === 'col'
+        ? (Math.min(Math.max(ev.clientX - box.left, MIN_PANEL), box.width - MIN_PANEL) / box.width) * 100
+        : (Math.min(Math.max(box.bottom - ev.clientY, MIN_PANEL / 2), box.height - MIN_PANEL / 2) / box.height) * 100;
+      pageState.sizes[page.id] = { ...pageState.sizes[page.id], [key]: Math.round(pct * 10) / 10 };
+      applySizes(page);
+    }, savePagePrefs);
+  };
+  handle.ondblclick = () => {
+    const size = { ...pageState.sizes[page.id] };
+    delete size[key];
+    if (Object.keys(size).length) pageState.sizes[page.id] = size;
+    else delete pageState.sizes[page.id];
+    applySizes(page);
+    savePagePrefs();
+  };
 }
 
 function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
