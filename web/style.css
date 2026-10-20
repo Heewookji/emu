@@ -210,6 +210,7 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 .page-tab { background: none; border: 1px solid transparent; color: var(--muted); white-space: nowrap; }
 .page-tab:hover { background: #21262d; color: var(--fg); }
 .page-tab.active { color: #fff; background: var(--bg); border-color: var(--border); }
+.page-src { margin-left: 5px; padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; font-size: 9px; color: var(--muted); vertical-align: 1px; }
 .page-problems { color: var(--warn); font-size: 11px; padding: 0 6px; align-self: center; cursor: help; white-space: nowrap; }
 
 .pagebar {
