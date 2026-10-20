@@ -323,3 +323,10 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .ext-block .blk-head .plus, .ext-block .blk-head .minus { font-size: 11px; }
 .ext-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 .ext-empty[hidden] { display: none; }
+
+/* Page form block: labeled fields, then its buttons. */
+.ext-block.form { flex: 0 0 auto; }
+.form-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 10px; align-items: center; padding: 12px; font-size: 12px; }
+.form-grid label { color: var(--muted); }
+.form-grid .field { font-family: "SF Mono", Menlo, monospace; }
+.form-actions { grid-column: 1 / -1; display: flex; gap: 6px; }

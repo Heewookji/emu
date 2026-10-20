@@ -23,7 +23,7 @@ bool isPageId(String s) => _id.hasMatch(s);
 /// The built-in page the dashboard always shows first.
 const debugPageId = 'debug';
 
-/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`.
+/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`, `{{input.<field>}}`.
 final _placeholder = RegExp(r'\{\{\s*([A-Za-z]+)(?:\.([A-Za-z0-9_-]+))?\s*\}\}');
 final _braces = RegExp(r'\{\{.*?\}\}');
 
@@ -45,7 +45,7 @@ class PageCommand {
   /// What runs, for people (confirm dialog, `emu pages`): argv shell-quoted.
   String get display => argv?.map(shellQuote).join(' ') ?? shell!;
 
-  /// The placeholders used, as `selected.name`, `row.id`, `seg`.
+  /// The placeholders used, as `selected.name`, `row.id`, `seg`, `input.url`.
   Set<String> get placeholders => {
         for (final arg in argv ?? const <String>[])
           for (final m in _placeholder.allMatches(arg)) _key(m),
@@ -72,7 +72,7 @@ class MissingValue implements Exception {
   MissingValue(this.key);
   final String key;
 
-  /// `selected`, `row` or `seg`.
+  /// `selected`, `row`, `seg` or `input`.
   String get kind => key.split('.').first;
 
   @override
@@ -131,29 +131,41 @@ sealed class ToolbarItem {
   Map<String, dynamic> toJson();
 }
 
-/// Runs [run] when pressed — a toolbar button, or a button on each row of a
-/// list (`rowActions`). With [confirm], the dashboard shows the command and
-/// asks first, and `emu run` needs `--yes`.
+/// Runs [run] when pressed — a toolbar button, a button on each row of a list
+/// (`rowActions`) or under a form. Instead of a command it may open
+/// [openUrl] on the device, the way `emu open-url` does. With [confirm], the
+/// dashboard shows what will run and asks first, and `emu run` needs `--yes`.
 class PageAction extends ToolbarItem {
   const PageAction({
     required super.id,
     required super.label,
-    required this.run,
+    this.run,
+    this.openUrl,
     super.then = Then.none,
     super.timeout = defaultTimeout,
     this.confirm = false,
-  });
+  }) : assert((run == null) != (openUrl == null));
 
-  final PageCommand run;
+  final PageCommand? run;
+
+  /// The deep link to open, as a one-argument command (so placeholders fill
+  /// the same way).
+  final PageCommand? openUrl;
   final bool confirm;
+
+  /// What it does, for people.
+  String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
+
+  Set<String> get placeholders => (run ?? openUrl)!.placeholders;
 
   @override
   Map<String, dynamic> toJson() => {
         'kind': 'action',
         'id': id,
         'label': label,
-        'command': run.display,
-        'uses': run.placeholders.toList(),
+        'command': display,
+        if (openUrl != null) 'openUrl': openUrl!.argv!.single,
+        'uses': placeholders.toList(),
         'then': then.name,
         'confirm': confirm,
       };
@@ -351,6 +363,47 @@ class HtmlBlock extends PageBlock {
       };
 }
 
+class FormField {
+  const FormField({required this.name, required this.label, this.placeholder, this.initial});
+
+  final String name;
+  final String label;
+  final String? placeholder;
+
+  /// The value before anyone types (`default:`).
+  final String? initial;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'label': label,
+        'placeholder': ?placeholder,
+        'default': ?initial,
+      };
+}
+
+/// Input fields and the buttons that use them: what's typed fills
+/// `{{input.<field>}}` in the [actions]. Values aren't stored by emu; the
+/// dashboard keeps them per browser.
+class FormBlock extends PageBlock {
+  const FormBlock({required super.id, super.area = 'main', required this.title, required this.fields, required this.actions});
+
+  final String title;
+  final List<FormField> fields;
+  final List<PageAction> actions;
+
+  PageAction? action(String id) => actions.where((a) => a.id == id).firstOrNull;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'kind': 'form',
+        'id': id,
+        'area': area,
+        'title': title,
+        'fields': [for (final f in fields) f.toJson()],
+        'actions': [for (final a in actions) a.toJson()],
+      };
+}
+
 class DashboardPage {
   const DashboardPage({required this.id, required this.title, this.toolbar = const [], this.blocks = const []});
 
@@ -417,12 +470,15 @@ PagesConfig parsePages(Object? raw) {
 
 /// Who may use which placeholder: the selection everywhere but in the list
 /// that makes it, a row only in that list's row buttons, a segment only in
-/// a diff with segments.
+/// a diff with segments, an input only in its own form's buttons.
 class _Allowed {
-  const _Allowed({this.selected = true, this.row = false, this.seg = false});
+  const _Allowed({this.selected = true, this.row = false, this.seg = false, this.inputs});
   final bool selected;
   final bool row;
   final bool seg;
+
+  /// The form's field names; null outside a form.
+  final Set<String>? inputs;
 }
 
 DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
@@ -522,9 +578,28 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
+  final confirm = m['confirm'] == true;
+  if (m['openUrl'] != null) {
+    if (m['run'] != null) {
+      problems.add('$where: give run or openUrl, not both');
+      return null;
+    }
+    if (then != Then.none) {
+      problems.add('$where: then doesn\'t apply to openUrl');
+      return null;
+    }
+    final url = m['openUrl'];
+    // One argument: whatever fills its placeholders stays part of the URL.
+    final openUrl = url is String && url.trim().isNotEmpty ? _command([url], '$where.openUrl', allowed, problems) : null;
+    if (openUrl == null) {
+      if (url is! String || url.trim().isEmpty) problems.add('$where.openUrl: expected a URL like "myapp://home?id={{row.id}}"');
+      return null;
+    }
+    return PageAction(id: id, label: label, openUrl: openUrl, timeout: timeout, confirm: confirm);
+  }
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
-  return PageAction(id: id, label: label, run: run, then: then, timeout: timeout, confirm: m['confirm'] == true);
+  return PageAction(id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm);
 }
 
 /// label, then, timeout — shared by actions, toggles and row actions.
@@ -542,14 +617,14 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
 PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?, String) claim,
     List<String> problems, {required bool makesSelection}) {
   final (kind, m) = entry;
-  if (!const {'output', 'list', 'diff', 'html'}.contains(kind)) {
-    problems.add('$at: unknown block "$kind" (list, diff, html, output)');
+  if (!const {'output', 'list', 'diff', 'html', 'form'}.contains(kind)) {
+    problems.add('$at: unknown block "$kind" (list, diff, html, form, output)');
     return null;
   }
   final id = claim(m['id'] ?? kind, at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' => 'main', _ => 'bottom' }}';
+  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' || 'form' => 'main', _ => 'bottom' }}';
   if (!blockAreas.contains(area)) {
     problems.add('$where: area must be left, main or bottom (got "$area")');
     return null;
@@ -562,9 +637,10 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     }
     return OutputBlock(id: id, area: area);
   }
+  final title = '${m['title'] ?? id}';
+  if (kind == 'form') return _parseForm(m, id, area, title, where, problems);
   final watch = _watch(m['watch'], '$where.watch', problems);
   if (watch == null) return null;
-  final title = '${m['title'] ?? id}';
   if (kind == 'html') {
     final src = m['src'];
     if (src is! String || !_projectRelative(src) || !src.toLowerCase().endsWith('.html')) {
@@ -631,6 +707,45 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   );
 }
 
+FormBlock? _parseForm(Map m, String id, String area, String title, String where, List<String> problems) {
+  final rawFields = m['fields'];
+  if (rawFields is! List || rawFields.isEmpty) {
+    problems.add('$where.fields: expected a list like [{name: url, label: URL}]');
+    return null;
+  }
+  final fields = <FormField>[];
+  for (final (i, f) in rawFields.indexed) {
+    final name = f is Map ? f['name']?.toString() : null;
+    if (name == null || !isPageId(name) || fields.any((x) => x.name == name)) {
+      problems.add('$where.fields[$i]: needs a name of letters, digits, - or _, unique in this form');
+      return null;
+    }
+    fields.add(FormField(
+      name: name,
+      label: '${(f as Map)['label'] ?? name}',
+      placeholder: f['placeholder']?.toString(),
+      initial: f['default']?.toString(),
+    ));
+  }
+  final allowed = _Allowed(inputs: {for (final f in fields) f.name});
+  final actions = <PageAction>[];
+  for (final (j, e) in _entries(m['actions'], '$where.actions', problems).indexed) {
+    final (k, body) = e;
+    final aid = body['id']?.toString();
+    if (k != 'action' || aid == null || !isPageId(aid) || actions.any((a) => a.id == aid)) {
+      problems.add('$where.actions[$j]: expected `- action: {id: …, run: […]}` with an id unique in this form');
+      continue;
+    }
+    final a = _parseAction(body, aid, '$where.$aid', allowed, problems);
+    if (a != null) actions.add(a);
+  }
+  if (actions.isEmpty) {
+    problems.add('$where.actions: a form needs at least one action');
+    return null;
+  }
+  return FormBlock(id: id, area: area, title: title, fields: fields, actions: actions);
+}
+
 PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> problems) {
   PageCommand? command;
   if (v is String && v.trim().isNotEmpty) {
@@ -654,17 +769,22 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
     for (final m in _braces.allMatches(arg)) {
       final p = _placeholder.matchAsPrefix(m.group(0)!);
       final kind = p?.group(1);
-      final hasName = p?.group(2) != null;
+      final name = p?.group(2);
+      final hasName = name != null;
+      final unknown = 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg, input.<field>)';
       final String? why = switch (kind) {
-        null => 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg)',
+        null => unknown,
         'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
         'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
+        'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
         'seg' when hasName => '{{seg}} takes no column',
         'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
         'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
         'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
-        'selected' || 'row' || 'seg' => null,
-        _ => 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg)',
+        'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
+        'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
+        'selected' || 'row' || 'seg' || 'input' => null,
+        _ => unknown,
       };
       if (why != null) {
         problems.add('$at: $why');

@@ -806,10 +806,12 @@ pages:
 | `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
 | `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
+| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser |
 | `output` | — | The page's last run: command, exit code, time, output |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
-  the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment.
+  the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
+  `{{input.<field>}}` — a form's field, in that form's buttons.
   They work only in `[program, arg, …]` commands, and each value stays inside its own
   argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
   is never run. A shell-string command with a placeholder is a config error.
@@ -820,6 +822,26 @@ pages:
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row and segment are remembered
   per browser.
+- Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
+  link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
+  waits for the app to settle) and refreshes the screen panel. A deep-link page needs no
+  script for that:
+
+  ```yaml
+  - id: links
+    title: Deep links
+    blocks:
+      - list:
+          id: routes
+          run: [./tool/routes, list, --json]
+          rowActions:
+            - action: { id: open, openUrl: "myapp://{{row.route}}" }
+      - form:
+          id: link
+          fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
+          actions:
+            - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
 - An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
   frame with its own opaque origin and no network (`default-src 'none'`): it can't read the
   dashboard, the session token or other blocks. Its data arrives by `postMessage` as
@@ -858,6 +880,8 @@ emu pages                          # pages, items and blocks (--json available)
 emu run templates.sync             # same as pressing the button: its output, then a result line
 emu run templates.local on         # a toggle takes on/off
 emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
+emu run links.routes.open --row route=home        # a row button, as if pressed on that row
+emu run links.link.open --input url=myapp://home   # a form button with what's typed
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```

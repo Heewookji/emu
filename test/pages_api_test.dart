@@ -67,6 +67,7 @@ void main() {
         followUps.add(then);
         return {'action': then.name, 'ok': followUpOk, 'message': followUpOk ? 'Reloaded 1 of 9 libraries' : 'app is not running'};
       },
+      openUrl: (url) async => {'ok': true},
       broadcast: broadcasts.add,
       log: (text, level) => logs.add((text, level)),
     );

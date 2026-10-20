@@ -542,6 +542,7 @@ const pageState = {
   seg: {},               // 'page.block' → chosen segment
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
+  input: {},             // 'page.form' → {field: value}
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
 };
 const PAGE_KEY = 'emu.page';
@@ -551,9 +552,12 @@ try {
   const prefs = JSON.parse(localStorage.getItem(PAGE_PREFS_KEY)) || {};
   if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
+  if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
 } catch (_) {}
 function savePagePrefs() {
-  try { localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg })); } catch (_) {}
+  try {
+    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg, input: pageState.input }));
+  } catch (_) {}
 }
 
 const currentPage = () => pageState.pages.find(p => p.id === pageState.current);
@@ -723,14 +727,18 @@ function renderRunning(page) {
   if (currentPage() !== page) return;
   renderPageBar(page);
   renderOutputs(page);
-  for (const b of page.blocks) if (b.kind === 'list') renderListRows(page, b);
+  for (const b of page.blocks) {
+    if (b.kind === 'list') renderListRows(page, b);
+    else if (b.kind === 'form') renderFormButtons(page, b);
+  }
 }
 
 function finishRun(page, item, key, run) {
   pageState.last[page.id] = run;
   if (run.state) pageState.toggles[key] = run.state;
   toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
-  if (run.then?.ok) scheduleRefresh(); // reloaded: show the new screen
+  if (item.openUrl && run.ok) refreshShot(); // the server already waited for the app to settle
+  else if (run.then?.ok) scheduleRefresh(); // reloaded: show the new screen
 }
 
 // Runs started anywhere (this tab, another tab, `emu run`) show up here too.
@@ -785,6 +793,7 @@ function renderPageBody(page) {
       if (b.kind === 'list') initList(page, b, el);
       else if (b.kind === 'diff') initDiff(page, b, el);
       else if (b.kind === 'html') initHtml(page, b, el);
+      else if (b.kind === 'form') initForm(page, b, el);
     }
   }
   renderOutputs(page);
@@ -803,7 +812,7 @@ function loadBlocks(page, blocks) {
   const list = selectionList(page);
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
-    if (b.kind === 'output' || waiting.includes(b)) continue;
+    if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
@@ -1113,6 +1122,51 @@ window.addEventListener('message', (e) => {
       `/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, runValues(page));
   }
 });
+
+// form: fields and the buttons that use them. What's typed fills
+// {{input.<field>}} server-side and is kept per browser.
+function formValues(page, block) {
+  const saved = pageState.input[blockKey(page, block)] || {};
+  return Object.fromEntries(block.fields.map(f => [f.name, saved[f.name] ?? f.default ?? '']));
+}
+
+function initForm(page, block, el) {
+  const key = blockKey(page, block);
+  const values = formValues(page, block);
+  const fieldId = (f) => `f-${page.id}-${block.id}-${f.name}`;
+  el.innerHTML = `<div class="blk-head"><span class="name">${escapeHtml(block.title)}</span></div>`
+    + '<div class="form-grid">'
+    + block.fields.map(f => `<label for="${escapeHtml(fieldId(f))}">${escapeHtml(f.label)}</label>`
+      + `<input class="field" id="${escapeHtml(fieldId(f))}" data-field="${escapeHtml(f.name)}" type="text"`
+      + ` placeholder="${escapeHtml(f.placeholder || '')}" value="${escapeHtml(values[f.name])}" autocomplete="off" spellcheck="false" />`).join('')
+    + '<div class="form-actions"></div></div>';
+  el.querySelectorAll('[data-field]').forEach(input => {
+    input.addEventListener('input', () => {
+      pageState.input[key] = { ...formValues(page, block), [input.dataset.field]: input.value };
+      savePagePrefs();
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.querySelector('[data-action]')?.click(); });
+  });
+  renderFormButtons(page, block);
+}
+
+function renderFormButtons(page, block) {
+  const host = blockEl(block)?.querySelector('.form-actions');
+  if (!host) return;
+  host.innerHTML = block.actions.map(a => {
+    const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+    return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}"`
+      + ` title="${escapeHtml(a.command)}">${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+  }).join('');
+  host.querySelectorAll('[data-action]').forEach(btn => {
+    btn.onclick = () => {
+      const a = block.actions.find(x => x.id === btn.dataset.action);
+      runItem(page, a, `${page.id}.${block.id}.${a.id}`,
+        `/api/pages/${encodeURIComponent(page.id)}/forms/${encodeURIComponent(block.id)}/${encodeURIComponent(a.id)}`,
+        { ...runValues(page), input: formValues(page, block) });
+    };
+  });
+}
 
 // output: the page's last run — what ran, how it ended, what it printed.
 function outputHtml(page) {

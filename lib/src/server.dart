@@ -203,6 +203,7 @@ class EmuServer {
       profile: opts.profile,
       environment: _pageEnvironment,
       followUp: _pageFollowUp,
+      openUrl: (url) async => (await _openDeepLink(url)).$2,
       broadcast: _broadcast,
       log: (text, level) => logStore.add(text, level: level, source: 'ext'),
     );
@@ -983,21 +984,28 @@ class EmuServer {
     }
   }
 
-  /// Deep link from the dashboard — same argv-only invocation as `emu open-url`
-  /// (see [buildOpenUrlCommand]), then a best-effort settle so the caller's
-  /// next screenshot shows the destination rather than the transition. The
-  /// settle is capped well below the CLI's 10s: an app that never goes quiet
-  /// (looping animation, streaming list) would otherwise stall the button. The
-  /// outer timeout matters too — `timeout` only bounds the poll loop, and right
-  /// after launch the first VM `evaluate` alone can take 10s+.
+  /// The dashboard's deep link box.
   Future<Response> _openUrl(Request req) async {
     final url = req.url.queryParameters['url'];
     if (url == null || url.isEmpty) {
       return _json({'ok': false, 'error': 'url is required'}, status: 400);
     }
+    final (status, body) = await _openDeepLink(url);
+    return _json(body, status: status);
+  }
+
+  /// Deep link from the dashboard's box or a page's `openUrl:` action — same
+  /// argv-only invocation as `emu open-url` (see [buildOpenUrlCommand]), then
+  /// a best-effort settle so the caller's next screenshot shows the
+  /// destination rather than the transition. The settle is capped well below
+  /// the CLI's 10s: an app that never goes quiet (looping animation, streaming
+  /// list) would otherwise stall the button. The outer timeout matters too —
+  /// `timeout` only bounds the poll loop, and right after launch the first VM
+  /// `evaluate` alone can take 10s+. Returns the HTTP status and body.
+  Future<(int, Map<String, dynamic>)> _openDeepLink(String url) async {
     final deviceId = engine.status.deviceId;
     if (deviceId == null) {
-      return _json({'ok': false, 'error': 'no device connected'}, status: 409);
+      return (409, {'ok': false, 'error': 'no device connected'});
     }
     final cmd = buildOpenUrlCommand(platform: _platform, deviceId: deviceId, url: url);
     final seq = logStore.lastSeq;
@@ -1007,17 +1015,17 @@ class EmuServer {
       // dashboard's request.
       result = await runWithTimeout(cmd.executable, cmd.arguments);
     } catch (e) {
-      return _json({'ok': false, 'url': url, 'error': '$e'}, status: 500);
+      return (500, {'ok': false, 'url': url, 'error': '$e'});
     }
     if (result.exitCode != 0) {
-      return _json({'ok': false, 'url': url, 'error': '${result.stderr}'.trim()}, status: 500);
+      return (500, {'ok': false, 'url': url, 'error': '${result.stderr}'.trim()});
     }
     final uri = engine.status.vmServiceUri;
     if (uri != null) {
       await waitForSettle(uri, timeout: const Duration(seconds: 3))
           .timeout(const Duration(seconds: 4), onTimeout: () => false);
     }
-    return _json({'ok': true, 'url': url, 'seq': seq});
+    return (200, {'ok': true, 'url': url, 'seq': seq});
   }
 
   /// Whether the app has painted yet — `running` alone doesn't mean tappable.

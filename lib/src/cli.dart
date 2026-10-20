@@ -2115,6 +2115,13 @@ Future<int> _pagesCmd(List<String> args) async {
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
         print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
       }
+      if (b['kind'] == 'form') {
+        print('  ${col('  field', 7)}${[for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']].join(', ')}');
+        for (final a in (b['actions'] as List).cast<Map<String, dynamic>>()) {
+          print('  ${col('  form', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
+              '${a['confirm'] == true ? '   (asks first)' : ''}');
+        }
+      }
     }
   }
   for (final problem in (data['problems'] as List? ?? const [])) {
@@ -2126,36 +2133,71 @@ Future<int> _pagesCmd(List<String> args) async {
 Future<int> _runCmd(List<String> args) async {
   final parser = ArgParser()
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
+    ..addMultiOption('row', abbr: 'r', splitCommas: false, help: "<col>=<value> of a row button's row (repeatable)")
+    ..addMultiOption('input', abbr: 'i', splitCommas: false, help: "<field>=<value> for a form's button (repeatable)")
     ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: true')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
-      '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), the same as\n'
-      '   pressing it in the dashboard. A toggle takes on or off; an action marked\n'
-      '   confirm: true runs only with --yes; --select fills {{selected.<col>}}.\n'
-      '   Exit 0 = the command and its then: reload/restart succeeded. `emu pages`\n'
-      '   lists the items.';
+      '       emu run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...\n'
+      '                                      [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
+      '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), a list\'s row\n'
+      '   button or a form\'s button, the same as pressing it in the dashboard. A\n'
+      '   toggle takes on or off; an action marked confirm: true runs only with\n'
+      '   --yes. --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
+      '   {{input.<field>}}. Exit 0 = the command and its then: reload/restart\n'
+      '   succeeded. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final rest = res.rest;
-  final target = rest.isEmpty ? '' : rest.first;
-  final dot = target.indexOf('.');
-  final selects = res.multiOption('select');
-  if (rest.isEmpty || rest.length > 2 || dot <= 0 || dot == target.length - 1 ||
-      (rest.length == 2 && rest[1] != 'on' && rest[1] != 'off') || selects.any((s) => s.indexOf('=') <= 0)) {
+  final target = (rest.isEmpty ? '' : rest.first).split('.');
+  Map<String, String>? pairs(String option) {
+    final out = <String, String>{};
+    for (final p in res.multiOption(option)) {
+      final eq = p.indexOf('=');
+      if (eq <= 0) return null;
+      out[p.substring(0, eq)] = p.substring(eq + 1);
+    }
+    return out;
+  }
+
+  final selected = pairs('select'), row = pairs('row'), input = pairs('input');
+  final onOff = rest.length == 2 ? rest[1] : null;
+  if (rest.isEmpty || rest.length > 2 || target.length < 2 || target.length > 3 || target.any((t) => t.isEmpty) ||
+      (onOff != null && (onOff != 'on' && onOff != 'off' || target.length == 3)) ||
+      selected == null || row == null || input == null) {
     stderr.writeln(usage);
     return 2;
   }
-  final page = target.substring(0, dot), item = target.substring(dot + 1);
   final info = _requireServer();
+  final page = Uri.encodeComponent(target[0]);
+  String path;
+  if (target.length == 2) {
+    path = '/api/pages/$page/run/${Uri.encodeComponent(target[1])}';
+  } else {
+    // A row button or a form button: which, the page's config says.
+    final pages = await _getJson(info, '/api/pages');
+    final blocks = [
+      for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
+        if (p['id'] == target[0]) ...(p['blocks'] as List).cast<Map<String, dynamic>>(),
+    ];
+    final kind = blocks.where((b) => b['id'] == target[1]).firstOrNull?['kind'];
+    if (kind != 'list' && kind != 'form') {
+      stderr.writeln('✗ no list or form "${target[1]}" on page ${target[0]}');
+      return 1;
+    }
+    path = '/api/pages/$page/${kind == 'list' ? 'rows' : 'forms'}/'
+        '${Uri.encodeComponent(target[1])}/${Uri.encodeComponent(target[2])}';
+  }
   final r = await _postJson(
     info,
-    '/api/pages/${Uri.encodeComponent(page)}/run/${Uri.encodeComponent(item)}',
+    path,
     jsonEncode({
       'confirmed': res.flag('yes'),
-      if (rest.length == 2) 'on': rest[1] == 'on',
-      if (selects.isNotEmpty)
-        'selected': {for (final s in selects) s.substring(0, s.indexOf('=')): s.substring(s.indexOf('=') + 1)},
+      if (onOff != null) 'on': onOff == 'on',
+      if (selected.isNotEmpty) 'selected': selected,
+      if (row.isNotEmpty) 'row': row,
+      if (input.isNotEmpty) 'input': input,
     }),
     // The server bounds the command (its timeout:); this only must outlast it.
     timeout: const Duration(hours: 1),
@@ -2170,12 +2212,18 @@ Future<int> _runCmd(List<String> args) async {
     return ok ? 0 : 1;
   }
   if (r['needsConfirm'] == true) {
-    stderr.writeln('✗ $target asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
+    stderr.writeln('✗ ${rest.first} asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
     return 1;
   }
   if (r['exitCode'] == null) {
-    // Unknown page/item, already running, bad on/off, no selection.
-    stderr.writeln('✗ ${r['error']}${r['needs'] == 'selected' ? ' (--select <col>=<value>)' : ''}');
+    // Unknown page/item, already running, bad on/off, a value missing.
+    final hint = switch (r['needs']) {
+      'selected' => ' (--select <col>=<value>)',
+      'row' => ' (--row <col>=<value>)',
+      'input' => ' (--input <field>=<value>)',
+      _ => '',
+    };
+    stderr.writeln('✗ ${r['error']}$hint');
     return 1;
   }
   final output = '${r['output'] ?? ''}';
@@ -2183,7 +2231,7 @@ Future<int> _runCmd(List<String> args) async {
   final secs = ((r['ms'] as num? ?? 0) / 1000).toStringAsFixed(1);
   final then = r['then'] as Map?;
   final state = r['state'] as Map?;
-  final line = '${ok ? '✓' : '✗'} $target — ${r['error'] ?? 'exit 0'} · ${secs}s'
+  final line = '${ok ? '✓' : '✗'} ${rest.first} — ${r['error'] ?? 'exit 0'} · ${secs}s'
       '${then == null ? '' : ' · ${then['action']}: ${then['message'] ?? (then['ok'] == true ? 'ok' : 'failed')}'}'
       '${state == null ? '' : state['ok'] == true ? ' · now ${state['on'] == true ? 'on' : 'off'}${state['detail'] != null ? ' (${state['detail']})' : ''}' : ' · state: ${state['error']}'}';
   if (ok) {
@@ -2649,9 +2697,11 @@ COMMANDS
   open                   Open the dashboard in the browser
   pages                  List the dashboard pages declared in emu.yaml (`pages:`)
   run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
-                         Run a page's toolbar item, as its dashboard button does.
-                         A toggle takes on/off; confirm: true actions need --yes;
-                         --select fills {{selected.<col>}}
+  run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...
+                         Run a page's toolbar item, row button or form button, as
+                         the dashboard does. A toggle takes on/off; confirm: true
+                         actions need --yes; --select/--row/--input fill
+                         {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}
   block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
                          What a page's list (rows) or diff block shows; --select
                          fills {{selected.<col>}} like picking a row

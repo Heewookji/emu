@@ -12,6 +12,7 @@ pages:
   - id: tpl
     toolbar:
       - action: { id: publish, run: [./tool/t.sh, args, publish, "{{selected.name}}"], confirm: true }
+      - action: { id: home, openUrl: "myapp://home" }
     blocks:
       - list:
           id: items
@@ -20,7 +21,16 @@ pages:
           columns: [name, local:chip]
           rowActions:
             - action: { id: check, run: [./tool/t.sh, args, check, "{{row.name}}"] }
+            - action: { id: go, openUrl: "myapp://item?name={{row.name}}" }
           watch: [templates/**]
+      - form:
+          id: link
+          fields:
+            - { name: url }
+            - { name: note }
+          actions:
+            - action: { id: open, openUrl: "{{input.url}}", confirm: true }
+            - action: { id: echo, run: [./tool/t.sh, args, "{{input.url}}", "{{input.note}}"] }
       - diff:
           id: changes
           run: [./tool/t.sh, diff, "{{selected.name}}", "{{seg}}"]
@@ -58,8 +68,10 @@ esac
 void main() {
   late Directory root;
   late PagesApi api;
+  late List<String> opened;
 
   setUp(() {
+    opened = [];
     root = Directory.systemTemp.createTempSync('emu_blocks_');
     File('${root.path}/emu.yaml').writeAsStringSync(_emuYaml);
     final script = File('${root.path}/tool/t.sh')
@@ -77,6 +89,10 @@ void main() {
       home: root.path,
       environment: () => {},
       followUp: (_) async => {'ok': true},
+      openUrl: (url) async {
+        opened.add(url);
+        return url.startsWith('bad://') ? {'ok': false, 'error': 'no app handles bad://'} : {'ok': true};
+      },
       broadcast: (_) {},
       log: (_, _) {},
     );
@@ -160,6 +176,7 @@ void main() {
     var (code, j) = await call('GET', '/api/pages/tpl/blocks/nope');
     expect(code, 404);
     expect(j['error'], contains('items, changes, broken, tree, plain, help, escape'));
+    expect(j['error'], isNot(contains('link'))); // a form has no data to fetch
     (code, _) = await call('POST', '/api/pages/tpl/rows/items/nope', {});
     expect(code, 404);
     (code, _) = await call('POST', '/api/pages/tpl/rows/changes/check', {});
@@ -198,6 +215,54 @@ void main() {
 
     (code, _) = await call('GET', '/api/pages/tpl/frames/items');
     expect(code, 404); // a list has no frame
+  });
+
+  test('a form button gets what was typed, each value one argument', () async {
+    final (code, j) = await call('POST', '/api/pages/tpl/forms/link/echo', {
+      'input': {'url': 'myapp://x?a=1&b=2', 'note': r'two words; $(id)'},
+    });
+    expect(code, 200);
+    expect(j['item'], 'link.echo');
+    expect(j['output'], '[myapp://x?a=1&b=2]\n[two words; \$(id)]\n');
+  });
+
+  test('openUrl opens the filled-in link on the device and reports it like a run', () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/forms/link/open', {'input': {'url': 'myapp://home?tab=2'}});
+    expect(code, 428); // confirm: true — the dialog shows exactly this
+    expect(j['command'], 'open-url myapp://home?tab=2');
+    expect(opened, isEmpty);
+
+    (code, j) = await call('POST', '/api/pages/tpl/forms/link/open', {
+      'input': {'url': 'myapp://home?tab=2'},
+      'confirmed': true,
+    });
+    expect(j['ok'], isTrue);
+    expect(j['command'], 'open-url myapp://home?tab=2');
+    expect(j['output'], 'opened myapp://home?tab=2');
+    expect(opened, ['myapp://home?tab=2']);
+
+    (_, j) = await call('POST', '/api/pages/tpl/rows/items/go', {'row': {'name': 'home banner'}});
+    expect(opened.last, 'myapp://item?name=home banner');
+
+    (_, j) = await call('POST', '/api/pages/tpl/run/home', {});
+    expect(opened.last, 'myapp://home');
+  });
+
+  test('openUrl: an empty field, a missing field and a failed open', () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/forms/link/open', {'input': {'url': '  '}, 'confirmed': true});
+    expect(code, 400);
+    expect(j['error'], contains('the URL is empty'));
+
+    (code, j) = await call('POST', '/api/pages/tpl/forms/link/open', {'confirmed': true});
+    expect(code, 400);
+    expect(j['needs'], 'input');
+
+    (_, j) = await call('POST', '/api/pages/tpl/forms/link/open', {'input': {'url': 'bad://x'}, 'confirmed': true});
+    expect(j['ok'], isFalse);
+    expect(j['output'], 'no app handles bad://');
+
+    (code, _) = await call('POST', '/api/pages/tpl/forms/items/check', {});
+    expect(code, 404); // a list's row action isn't a form action
   });
 
   test('watching maps changed paths to the blocks to fetch again', () {

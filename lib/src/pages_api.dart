@@ -5,10 +5,11 @@
 /// - `GET  /api/pages/<page>/state/<item>`          a toggle's state (runs its `state` command)
 /// - `POST /api/pages/<page>/run/<item>`            run a toolbar item
 /// - `POST /api/pages/<page>/rows/<list>/<action>`  run a list's row button
+/// - `POST /api/pages/<page>/forms/<form>/<action>` run a form's button
 /// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows, a diff's patch, an html block's data
 /// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 ///
-/// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}}`;
+/// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}, "input": {…}}`;
 /// GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
 /// placeholders of commands from the config.
 ///
@@ -137,12 +138,12 @@ List<Map<String, dynamic>>? parseListRows(String stdout) {
   return null;
 }
 
-/// Placeholder values carried by a request: `selected`/`row` maps and `seg`
-/// in a JSON body, or `selected.<col>=…`/`seg=…` in a query.
+/// Placeholder values carried by a request: `selected`/`row`/`input` maps and
+/// `seg` in a JSON body, or `selected.<col>=…`/`seg=…` in a query.
 Map<String, String> placeholderValues({Map? body, Map<String, String>? query}) {
   String? str(Object? v) => v == null ? null : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
   final out = <String, String>{};
-  for (final kind in ['selected', 'row']) {
+  for (final kind in ['selected', 'row', 'input']) {
     final m = body?[kind];
     if (m is! Map) continue;
     m.forEach((k, v) {
@@ -165,6 +166,7 @@ class PagesApi {
     this.home,
     required this.environment,
     required this.followUp,
+    required this.openUrl,
     required this.broadcast,
     required this.log,
   });
@@ -182,6 +184,9 @@ class PagesApi {
 
   /// Runs an item's `then:` and reports `{ok, message, …}`.
   final Future<Map<String, dynamic>> Function(Then then) followUp;
+
+  /// Opens a deep link on the device, as `emu open-url` does: `{ok, error?}`.
+  final Future<Map<String, dynamic>> Function(String url) openUrl;
 
   final void Function(Map<String, dynamic> message) broadcast;
   final void Function(String text, LogLevel level) log;
@@ -219,11 +224,11 @@ class PagesApi {
     switch ((parts[3], parts.length)) {
       case ('blocks', 5):
         final block = page.block(parts[4]);
-        if (block == null || block is OutputBlock) {
+        if (block == null || block is OutputBlock || block is FormBlock) {
           return _json({
             'ok': false,
             'error': 'no list, diff or html block "${parts[4]}" on page ${page.id} '
-                '(${page.blocks.where((b) => b is! OutputBlock).map((b) => b.id).join(', ')})',
+                '(${page.blocks.where((b) => b is ListBlock || b is DiffBlock || b is HtmlBlock).map((b) => b.id).join(', ')})',
           }, status: 404);
         }
         return _json(await _blockData(page, block, placeholderValues(query: query)));
@@ -235,7 +240,7 @@ class PagesApi {
         final item = page.item(parts[4]);
         if (item is! PageToggle) return _json({'ok': false, 'error': 'no toggle "${parts[4]}" on page ${page.id}'}, status: 404);
         return _json(await _state(page, item, placeholderValues(query: query)));
-      case ('run', 5) || ('rows', 6):
+      case ('run', 5) || ('rows', 6) || ('forms', 6):
         if (req.method != 'POST') return _json({'ok': false, 'error': 'use POST'}, status: 405);
         Map body;
         try {
@@ -246,13 +251,18 @@ class PagesApi {
         }
         final vars = placeholderValues(body: body);
         final confirmed = body['confirmed'] == true;
-        if (parts[3] == 'rows') {
-          final list = page.block(parts[4]);
-          final action = list is ListBlock ? list.rowAction(parts[5]) : null;
+        if (parts[3] == 'rows' || parts[3] == 'forms') {
+          final block = page.block(parts[4]);
+          final action = switch (block) {
+            ListBlock() when parts[3] == 'rows' => block.rowAction(parts[5]),
+            FormBlock() when parts[3] == 'forms' => block.action(parts[5]),
+            _ => null,
+          };
           if (action == null) {
-            return _json({'ok': false, 'error': 'no row action "${parts[4]}.${parts[5]}" on page ${page.id}'}, status: 404);
+            final what = parts[3] == 'rows' ? 'row action' : 'form action';
+            return _json({'ok': false, 'error': 'no $what "${parts[4]}.${parts[5]}" on page ${page.id}'}, status: 404);
           }
-          return _run(page, action, itemId: '${list!.id}.${action.id}', vars: vars, confirmed: confirmed);
+          return _run(page, action, itemId: '${block!.id}.${action.id}', vars: vars, confirmed: confirmed);
         }
         final item = page.item(parts[4]);
         if (item == null) {
@@ -284,7 +294,7 @@ class PagesApi {
     final PageCommand declared;
     switch (item) {
       case PageAction():
-        declared = item.run;
+        declared = (item.run ?? item.openUrl)!;
       case PageToggle():
         if (on == null) return _json({'ok': false, 'error': '$key is a toggle — say on or off'}, status: 400);
         declared = on ? item.on : item.off;
@@ -295,13 +305,16 @@ class PagesApi {
     } on MissingValue catch (e) {
       return _json(_needs(key, e), status: 400);
     }
+    final url = item is PageAction && item.openUrl != null ? command.argv!.single.trim() : null;
+    if (url != null && url.isEmpty) return _json({'ok': false, 'needs': 'input', 'error': '$key: the URL is empty'}, status: 400);
+    final display = url != null ? 'open-url $url' : command.display;
     if (item is PageAction && item.confirm && !confirmed) {
       // The exact command, values filled in: what the dialog shows is what runs.
       return _json({
         'ok': false,
         'needsConfirm': true,
-        'command': command.display,
-        'error': '$key asks for confirmation first — it runs: ${command.display}',
+        'command': display,
+        'error': '$key asks for confirmation first — it runs: $display',
       }, status: 428);
     }
     if (!_running.add(key)) {
@@ -310,8 +323,8 @@ class PagesApi {
     final PageRun run;
     try {
       broadcast({'type': 'ext', 'event': 'started', 'page': page.id, 'item': itemId});
-      log('[ext] $key ▸ ${command.display}', LogLevel.system);
-      run = await execute(page.id, itemId, command, item.timeout);
+      log('[ext] $key ▸ $display', LogLevel.system);
+      run = url != null ? await _openUrl(page.id, itemId, url) : await execute(page.id, itemId, command, item.timeout);
       if (run.commandOk && item.then != Then.none) run.then = await followUp(item.then);
       if (item is PageToggle) run.state = await _state(page, item, vars);
     } finally {
@@ -329,6 +342,7 @@ class PagesApi {
         'error': switch (e.kind) {
           'selected' => '$key uses {{${e.key}}} — select a row first',
           'row' => '$key uses {{${e.key}}} — the row has no such column',
+          'input' => '$key uses {{${e.key}}} — fill in that field',
           _ => '$key uses {{${e.key}}} — no value given',
         },
       };
@@ -398,6 +412,25 @@ class PagesApi {
       'rows': rows.length > _rowLimit ? rows.sublist(0, _rowLimit) : rows,
       if (rows.length > _rowLimit) 'truncated': rows.length,
     };
+  }
+
+  /// An `openUrl:` action, reported like a command run.
+  Future<PageRun> _openUrl(String page, String item, String url) async {
+    final at = DateTime.now();
+    final clock = Stopwatch()..start();
+    final r = await openUrl(url);
+    final ok = r['ok'] == true;
+    final text = ok ? 'opened $url' : '${r['error'] ?? 'open-url failed'}';
+    return PageRun(
+      page: page,
+      item: item,
+      command: 'open-url $url',
+      at: at,
+      exitCode: ok ? 0 : 1,
+      output: text,
+      stdout: text,
+      elapsed: clock.elapsed,
+    );
   }
 
   /// An html block's file, for the dashboard to put in its sandboxed frame.

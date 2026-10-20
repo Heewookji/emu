@@ -745,10 +745,11 @@ pages:
 | `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
 | `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
+| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억 |
 | `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
-  그 행. `{{seg}}` — diff 의 세그먼트. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
+  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸, 그 form 의 버튼에서. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
   들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
   명령에 치환을 쓰면 설정 오류다.
 - chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
@@ -756,6 +757,25 @@ pages:
   보여 준다.
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
   작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
+- 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
+  (argv 만, 기기 셸용 인용, 앱이 가라앉을 때까지 대기) 기기에 링크를 열고 화면 패널을 새로 고친다.
+  딥링크 페이지에는 스크립트가 필요 없다:
+
+  ```yaml
+  - id: links
+    title: Deep links
+    blocks:
+      - list:
+          id: routes
+          run: [./tool/routes, list, --json]
+          rowActions:
+            - action: { id: open, openUrl: "myapp://{{row.route}}" }
+      - form:
+          id: link
+          fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
+          actions:
+            - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
 - `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
   frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
   데이터는 로드 뒤와 새로 고칠 때마다 `postMessage` 의 `{type: "emu:data", ok, data, text, error,
@@ -791,6 +811,8 @@ emu pages                          # 페이지·항목·블록 목록(--json 가
 emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
 emu run templates.local on         # 토글은 on/off
 emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
+emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
+emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```

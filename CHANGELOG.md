@@ -33,6 +33,12 @@
   적은 툴바 액션만 `emu:action` 으로 요청할 수 있다(버튼과 같은 확인). 파일이 프로젝트 밖으로 이어지는
   링크면 거부, 파일을 저장하면 frame 을 다시 띄운다. 서버 API `GET /api/pages/<page>/frames/<block>`.
   list 의 chip 색은 흔한 상태 단어를 따르고 그 밖의 값은 중립색 (#24).
+- 대시보드 페이지 블록 `form` — 입력 칸(`fields`)과 그 값을 `{{input.<field>}}` 로 읽는 버튼(`actions`).
+  입력값은 브라우저에 기억하고, Enter 는 첫 버튼. 액션은 `run:` 대신 `openUrl:` 로 기기에 딥링크를 열 수
+  있다 — 대시보드 딥링크 입력·`emu open-url` 과 같은 경로(argv, 기기 셸 인용, settle)를 쓰고 끝나면 화면을
+  새로 고친다. 서버 API `POST /api/pages/<page>/forms/<form>/<action>` (#24).
+- `emu run <page>.<block>.<action> [--row <col>=<value>]... [--input <field>=<value>]...` — list 행 버튼과
+  form 버튼을 CLI로. `emu pages` 에 form 칸·버튼 표시 (#24).
 
 ### Fixed
 - 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을

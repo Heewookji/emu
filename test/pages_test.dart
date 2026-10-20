@@ -39,9 +39,9 @@ void main() {
       expect(sync.confirm, isFalse);
       expect(sync.timeout, defaultTimeout);
       final publish = page.item('publish') as PageAction;
-      expect(publish.run.shell, 'tool/publish.sh --all');
-      expect(publish.run.invocation.$1, 'sh');
-      expect(publish.run.invocation.$2, ['-c', 'tool/publish.sh --all']);
+      expect(publish.run!.shell, 'tool/publish.sh --all');
+      expect(publish.run!.invocation.$1, 'sh');
+      expect(publish.run!.invocation.$2, ['-c', 'tool/publish.sh --all']);
       expect(publish.confirm, isTrue);
       expect(publish.timeout, const Duration(seconds: 300));
       expect(page.blocks.single, isA<OutputBlock>().having((b) => b.id, 'id', 'output'));
@@ -52,7 +52,7 @@ void main() {
         {'id': 'p', 'toolbar': [{'action': {'id': 'a', 'run': ['sleep', 1]}}]},
       ]);
       expect(c.page('p')!.title, 'p');
-      expect((c.page('p')!.item('a') as PageAction).run.argv, ['sleep', '1']);
+      expect((c.page('p')!.item('a') as PageAction).run!.argv, ['sleep', '1']);
     });
 
     test('problems name where they are, and only the broken item is dropped', () {
@@ -140,7 +140,7 @@ void main() {
       expect(list.area, 'left');
       expect(list.title, 'items');
       expect([for (final col in list.columns) '${col.key}:${col.format}'], ['name:text', 'local:chip', 'changes:count']);
-      expect(list.rowAction('check')!.run.placeholders, {'row.name'});
+      expect(list.rowAction('check')!.run!.placeholders, {'row.name'});
       expect(list.watch, ['templates/**']);
       expect(page.selectionList, same(list));
       final diff = page.block('changes') as DiffBlock;
@@ -227,6 +227,65 @@ void main() {
       expect(all, contains('p.notes.src: expected a project-relative .html file'));
       expect(all, contains('p.ghost.actions: no toolbar action "deploy"'));
       expect(c.watching('tool/pages/tree.html'), {'p': ['tree']}); // its own file reloads it
+    });
+
+    test('a form: fields, and actions that read them; openUrl instead of run', () {
+      final c = parse(
+        [
+          {
+            'form': {
+              'id': 'link',
+              'fields': [
+                {'name': 'url', 'label': 'URL', 'placeholder': 'myapp://home', 'default': 'myapp://home'},
+                {'name': 'note'},
+              ],
+              'actions': [
+                {'action': {'id': 'open', 'openUrl': '{{input.url}}', 'confirm': true}},
+                {'action': {'id': 'log', 'run': ['./tool/t', '{{input.note}}', '{{selected.name}}']}},
+                {'action': {'id': 'typo', 'run': ['./tool/t', '{{input.nope}}']}},
+                {'action': {'id': 'both', 'run': ['x'], 'openUrl': 'myapp://x'}},
+                {'action': {'id': 'then', 'openUrl': 'myapp://x', 'then': 'reload'}},
+                {'action': {'id': 'nourl', 'openUrl': 3}},
+              ],
+            },
+          },
+          {'form': {'id': 'nofields', 'actions': [{'action': {'id': 'a', 'run': ['x']}}]}},
+          {'form': {'id': 'noactions', 'fields': [{'name': 'a'}]}},
+          {'form': {'id': 'dup', 'fields': [{'name': 'a'}, {'name': 'a'}], 'actions': [{'action': {'id': 'a', 'run': ['x']}}]}},
+          {'list': {'id': 'items', 'run': ['x'], 'rowActions': [{'action': {'id': 'go', 'openUrl': 'myapp://item/{{row.id}}'}}]}},
+        ],
+        toolbar: [
+          {'action': {'id': 'home', 'openUrl': 'myapp://home'}},
+          {'action': {'id': 'bad', 'run': ['./tool/t', '{{input.url}}']}},
+        ],
+      );
+      final page = c.page('p')!;
+      final form = page.block('link') as FormBlock;
+      expect(form.area, 'main');
+      expect([for (final f in form.fields) f.name], ['url', 'note']);
+      expect(form.fields.first.initial, 'myapp://home');
+      expect(form.actions.map((a) => a.id), ['open', 'log']);
+      final open = form.action('open')!;
+      expect(open.run, isNull);
+      expect(open.openUrl!.argv, ['{{input.url}}']);
+      expect(open.display, 'open-url {{input.url}}');
+      expect(open.toJson()['openUrl'], '{{input.url}}');
+      expect((page.item('home') as PageAction).display, 'open-url myapp://home');
+      expect((page.block('items') as ListBlock).rowAction('go')!.placeholders, {'row.id'});
+      expect(page.blocks.map((b) => b.id), ['link', 'items']);
+      final all = c.problems.join('\n');
+      for (final expected in [
+        'p.link.typo.run: no field "nope" in this form',
+        'p.link.both: give run or openUrl, not both',
+        "p.link.then: then doesn't apply to openUrl",
+        'p.link.nourl.openUrl: expected a URL',
+        'p.nofields.fields: expected a list',
+        'p.noactions.actions: a form needs at least one action',
+        'p.dup.fields[1]: needs a name of letters, digits, - or _, unique in this form',
+        "p.bad.run: {{input.*}} only works in a form's actions",
+      ]) {
+        expect(all, contains(expected));
+      }
     });
 
     test('watch globs match project-relative paths', () {
