@@ -22,7 +22,7 @@
   `count`, 필터, 행마다 `rowActions` 버튼), `diff` 는 명령이 출력한 unified diff를 Changes 탭처럼
   보여 준다(`segments` 로 비교 기준 전환). 페이지의 첫 list 에서 고른 행이 `{{selected.<col>}}`, 행 버튼의
   행이 `{{row.<col>}}`, 세그먼트가 `{{seg}}` 를 채운다. 치환은 argv 배열 명령에서만 되고 값은 인자 하나로만
-  들어간다(셸 문자열 명령의 치환은 설정 오류). `watch:` 글롭에 맞는 파일이 바뀌면 블록을 다시 불러온다
+  들어간다(셸 문자열 명령의 치환, 프로그램 자리(첫 요소)의 치환은 설정 오류). `watch:` 글롭에 맞는 파일이 바뀌면 블록을 다시 불러온다
   (git 이 무시하는 폴더 포함). 고른 행·세그먼트는 브라우저에 기억. 서버 API
   `GET /api/pages/<page>/blocks/<block>`, `POST /api/pages/<page>/rows/<list>/<action>` (#24).
 - `emu block <page>.<block> [--select <col>=<value>]... [--seg <name>]` — list·diff 블록 내용을 CLI로.
@@ -50,7 +50,8 @@
   `Access-Control-Allow-Origin: *` 로 열려 있어, 브라우저에 열린 아무 웹 페이지나 `127.0.0.1:4577` 로
   reload·tap·`shutdown` 등을 보내고 응답을 읽을 수 있었다. 이제 서버가 시작할 때마다 세션 토큰을 만들어
   `.emu/server.json`(CLI)과 대시보드 페이지에 넣고, `/api/` 요청은 토큰(`X-Emu-Token` 헤더,
-  WebSocket·이미지는 `token` 쿼리)이 있어야 처리한다. 생존 확인용 `GET /api/status` 만 예외. `Host` 가
+  WebSocket·이미지는 `token` 쿼리)이 있어야 처리한다. 생존 확인용 `GET /api/status` 만 예외 — 토큰이 없으면 서버가 떠 있다는 것만 답하고, VM Service 주소
+  (그 인증 코드로 앱 안에서 코드를 실행할 수 있다) 등 상태 전체는 토큰이 있어야 준다. `Host` 가
   `127.0.0.1`/`localhost` 가 아니거나(DNS rebinding) 브라우저 `Origin` 이 대시보드 자신이 아니면 거부하고,
   CORS 헤더를 없앴다. 대시보드 페이지는 캐시하지 않고 다른 사이트의 frame 안에 뜨지 않는다. 서버가 다시
   뜨면(새 토큰) 열려 있던 대시보드는 스스로 새로 고친다 (#24).

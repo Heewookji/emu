@@ -683,7 +683,7 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 - **세션 토큰** — 서버는 `127.0.0.1` 에서만 듣고, API는 이 세션의 대시보드와 CLI에만 응답한다.
   서버를 시작할 때마다 토큰을 만들어 `.emu/server.json`(CLI용)과 대시보드 페이지에 넣는다. 토큰이
   없거나, 다른 사이트(`Origin`)에서 왔거나, 다른 호스트 이름(DNS rebinding)으로 온 요청은 거부한다.
-  생존 확인용 `GET /api/status` 만 예외. `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
+  생존 확인용 `GET /api/status` 만 예외(토큰이 없으면 서버가 떠 있다는 것만 답하고 VM Service 주소는 주지 않는다). `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
   새로 고쳐 새 토큰을 받는다. API를 직접 부를 때:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
 
@@ -751,7 +751,8 @@ pages:
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
   그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸, 그 form 의 버튼에서. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
   들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
-  명령에 치환을 쓰면 설정 오류다.
+  명령에 치환을 쓰거나 프로그램 자리(첫 요소)에 치환을 쓰면 설정 오류다 — 값은 명령에 넘길 것만 정하고,
+  무엇을 실행할지는 정하지 못한다.
 - chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
 - `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
   보여 준다.

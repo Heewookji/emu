@@ -173,11 +173,15 @@ void main() {
         toolbar: [
           {'action': {'id': 'sh', 'run': './tool/t publish {{selected.name}}'}},
           {'action': {'id': 'ok', 'run': ['./tool/t', 'publish', '{{selected.name}}']}},
+          {'action': {'id': 'exe', 'run': ['{{selected.name}}', 'publish']}},
+          {'action': {'id': 'exe2', 'run': ['./tool/{{selected.name}}']}},
         ],
       );
       final all = c.problems.join('\n');
       for (final expected in [
         'p.sh.run: placeholders work only in the [program, arg, …] form',
+        "p.exe.run: the program can't contain a placeholder",
+        "p.exe2.run: the program can't contain a placeholder",
         "p.items.run: {{selected.*}} can't be used by the list that makes the selection",
         "p.other.run: {{row.*}} only works in a list's rowActions",
         'p.d1.run: {{seg}} only works in a diff block with segments',

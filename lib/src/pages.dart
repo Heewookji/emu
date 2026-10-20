@@ -590,7 +590,7 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
     }
     final url = m['openUrl'];
     // One argument: whatever fills its placeholders stays part of the URL.
-    final openUrl = url is String && url.trim().isNotEmpty ? _command([url], '$where.openUrl', allowed, problems) : null;
+    final openUrl = url is String && url.trim().isNotEmpty ? _command([url], '$where.openUrl', allowed, problems, program: false) : null;
     if (openUrl == null) {
       if (url is! String || url.trim().isEmpty) problems.add('$where.openUrl: expected a URL like "myapp://home?id={{row.id}}"');
       return null;
@@ -746,7 +746,8 @@ FormBlock? _parseForm(Map m, String id, String area, String title, String where,
   return FormBlock(id: id, area: area, title: title, fields: fields, actions: actions);
 }
 
-PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> problems) {
+/// [program] is false for an openUrl, whose one argument is the URL itself.
+PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> problems, {bool program = true}) {
   PageCommand? command;
   if (v is String && v.trim().isNotEmpty) {
     if (v.contains('{{')) {
@@ -757,6 +758,11 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
     command = PageCommand.shell(v);
   } else if (v is List && v.isNotEmpty && v.every((e) => e is String || e is num || e is bool)) {
     final argv = [for (final e in v) '$e'];
+    if (program && argv.first.contains('{{')) {
+      // A value would pick what runs, not just what it's given.
+      problems.add('$at: the program can\'t contain a placeholder — put values in the arguments after it');
+      return null;
+    }
     if (argv.first.isNotEmpty) command = PageCommand.argv(argv);
   }
   if (command == null) {
