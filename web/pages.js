@@ -323,30 +323,14 @@ function addResizer(page, host, axis) {
   host.appendChild(handle);
   const key = axis === 'col' ? 'left' : 'bottom';
   handle.onpointerdown = (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    handle.classList.add('dragging');
-    document.body.classList.add('resizing');
     const box = pageEls.body.getBoundingClientRect();
-    const move = (ev) => {
+    dragHandle(handle, e, (ev) => {
       const pct = axis === 'col'
         ? (Math.min(Math.max(ev.clientX - box.left, MIN_PANEL), box.width - MIN_PANEL) / box.width) * 100
         : (Math.min(Math.max(box.bottom - ev.clientY, MIN_PANEL / 2), box.height - MIN_PANEL / 2) / box.height) * 100;
       pageState.sizes[page.id] = { ...pageState.sizes[page.id], [key]: Math.round(pct * 10) / 10 };
       applySizes(page);
-    };
-    const up = () => {
-      handle.classList.remove('dragging');
-      document.body.classList.remove('resizing');
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
-      savePagePrefs();
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
+    }, savePagePrefs);
   };
   handle.ondblclick = () => {
     const size = { ...pageState.sizes[page.id] };
