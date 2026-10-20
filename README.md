@@ -799,7 +799,7 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom) |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
