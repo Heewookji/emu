@@ -18,6 +18,15 @@
   `GET /api/pages/<page>/state/<item>`, `POST /api/pages/<page>/run/<item>` (#24).
 - `emu pages`, `emu run <page>.<item> [on|off] [--yes]` — 같은 항목을 CLI로. 종료코드 0 = 명령과 `then:`
   이 성공 (#24).
+- 대시보드 페이지 블록 `list`·`diff` — `list` 는 명령이 출력한 JSON 배열을 표로(열 형식 `text`·`chip`·
+  `count`, 필터, 행마다 `rowActions` 버튼), `diff` 는 명령이 출력한 unified diff를 Changes 탭처럼
+  보여 준다(`segments` 로 비교 기준 전환). 페이지의 첫 list 에서 고른 행이 `{{selected.<col>}}`, 행 버튼의
+  행이 `{{row.<col>}}`, 세그먼트가 `{{seg}}` 를 채운다. 치환은 argv 배열 명령에서만 되고 값은 인자 하나로만
+  들어간다(셸 문자열 명령의 치환은 설정 오류). `watch:` 글롭에 맞는 파일이 바뀌면 블록을 다시 불러온다
+  (git 이 무시하는 폴더 포함). 고른 행·세그먼트는 브라우저에 기억. 서버 API
+  `GET /api/pages/<page>/blocks/<block>`, `POST /api/pages/<page>/rows/<list>/<action>` (#24).
+- `emu block <page>.<block> [--select <col>=<value>]... [--seg <name>]` — list·diff 블록 내용을 CLI로.
+  `emu run` 도 `--select` 로 툴바 항목의 `{{selected.<col>}}` 을 채운다 (#24).
 
 ### Fixed
 - 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을

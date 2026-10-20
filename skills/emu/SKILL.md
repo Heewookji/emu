@@ -132,9 +132,11 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 
 - `emu status` — 세션/기기/앱 상태 + VM Service URI.
 - `emu open` — 대시보드를 브라우저로 열기.
-- `emu pages` / `emu run <page>.<item> [on|off] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
+- `emu pages` / `emu run <page>.<item> [on|off] [--select <col>=<value>] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
   선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정.
   `confirm: true` 항목은 `--yes` 가 있어야 실행된다.
+- `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
+  보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).

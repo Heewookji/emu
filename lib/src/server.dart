@@ -173,6 +173,10 @@ class EmuServer {
   late final PagesApi pages;
   Timer? _pagesChangedDebounce;
 
+  /// Changed paths not yet checked against the pages' `watch:` globs.
+  final Set<String> _pageWatchPaths = {};
+  Timer? _pageWatchDebounce;
+
   HttpServer? _http;
   final Set<WebSocketChannel> _sockets = {};
 
@@ -897,6 +901,7 @@ class EmuServer {
           _pagesChangedDebounce?.cancel();
           _pagesChangedDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'pages'}));
         }
+        _queuePageWatch(rel);
         if (!repo || isWatchNoise(rel)) return;
         _fileWatchDebounce?.cancel();
         _fileWatchDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'diff', 'reason': 'files'}));
@@ -905,6 +910,25 @@ class EmuServer {
       // No recursive watch on this platform — the tab still updates on reload
       // and on its refresh button.
     }
+  }
+
+  /// A page block may watch any project path — `build/` or a git-ignored work
+  /// folder included — but not emu's or git's own churn. Checked in batches:
+  /// a save or a formatter run is a burst of events.
+  void _queuePageWatch(String rel) {
+    if (rel.isEmpty || rel.split(RegExp(r'[/\\]')).any(const {'.git', '.dart_tool', '.emu'}.contains)) return;
+    _pageWatchPaths.add(rel.replaceAll(r'\', '/'));
+    _pageWatchDebounce?.cancel();
+    _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
+      final hits = pages.watching(_pageWatchPaths);
+      _pageWatchPaths.clear();
+      if (hits.isNotEmpty) {
+        _broadcast({
+          'type': 'ext-watch',
+          'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
+        });
+      }
+    });
   }
 
   /// Resolves `scope`/`base` query params to a range (null: nothing to compare
@@ -1202,6 +1226,7 @@ class EmuServer {
     await _postHocClaim?.cancel();
     _fileWatchDebounce?.cancel();
     _pagesChangedDebounce?.cancel();
+    _pageWatchDebounce?.cancel();
     await _fileWatch?.cancel();
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();

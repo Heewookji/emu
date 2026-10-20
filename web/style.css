@@ -285,3 +285,37 @@ button.busy { opacity: .6; cursor: progress; }
 }
 .modal-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
 .modal .run { background: #8b2c28; border-color: var(--error); color: #fff; }
+
+/* Page blocks: list (table of a command's JSON rows) and diff (its patch). */
+.ext-block.loading > :not(.blk-head) { opacity: .55; }
+.blk-search {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; font-size: 11px; width: 150px; flex: 0 0 auto;
+}
+.blk-search:focus { outline: none; border-color: var(--accent); }
+.blk-head .count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.blk-scroll { flex: 1; overflow: auto; min-height: 0; }
+table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
+.lst th {
+  position: sticky; top: 0; background: var(--bg); text-align: left; color: var(--muted); font-weight: 500;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 11px; white-space: nowrap;
+}
+.lst td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lst tr.pick { cursor: pointer; }
+.lst tr.pick:hover td { background: var(--bg-row-alt); }
+.lst tr.sel td { background: #1c2430; }
+.lst tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.lst .row-actions { text-align: right; }
+.lst .row-actions button { padding: 2px 8px; font-size: 11px; }
+.lst .row-actions button + button { margin-left: 4px; }
+.chip { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; }
+.chip.on { background: #2ea04333; color: var(--system); }
+.chip.off { background: #30363d; color: var(--muted); }
+.chip.warn { background: #9e6a0033; color: #e3b341; }
+.count-hot { color: #e3b341; font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.seg button { border: none; border-radius: 0; padding: 2px 9px; font-size: 11px; background: none; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: #fff; }
+.ext-block .diff-view { flex: 1; min-height: 0; }
+.ext-block .blk-head .plus, .ext-block .blk-head .minus { font-size: 11px; }

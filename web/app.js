@@ -182,6 +182,7 @@ function connect() {
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
+    else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
   };
 }
 
@@ -518,6 +519,9 @@ loadDiffFiles(); // also decides whether the tab exists (git repo or not)
 // actions plus blocks. The server runs the commands and this only shows what
 // they print. The top bar's app controls and the screen panel stay put on
 // every page — a page's work ends in a reload and a look at the screen.
+//
+// The first list on a page holds its selection: the picked row is sent with
+// every run and block fetch, and fills `{{selected.<col>}}` server-side.
 
 const pageEls = {
   tabs: document.getElementById('page-tabs'),
@@ -534,11 +538,28 @@ const pageState = {
   last: {},              // page id → its last run
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
+  selected: {},          // page id → key value of the picked row
+  seg: {},               // 'page.block' → chosen segment
+  data: {},              // 'page.block' → {loading, result, query}
+  search: {},            // 'page.block' → filter text
+  stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
 };
 const PAGE_KEY = 'emu.page';
-try { pageState.current = localStorage.getItem(PAGE_KEY) || 'debug'; } catch (_) {}
+const PAGE_PREFS_KEY = 'emu.pagePrefs';
+try {
+  pageState.current = localStorage.getItem(PAGE_KEY) || 'debug';
+  const prefs = JSON.parse(localStorage.getItem(PAGE_PREFS_KEY)) || {};
+  if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
+  if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
+} catch (_) {}
+function savePagePrefs() {
+  try { localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg })); } catch (_) {}
+}
 
 const currentPage = () => pageState.pages.find(p => p.id === pageState.current);
+const blockKey = (page, block) => `${page.id}.${block.id}`;
+const itemKey = (page, item) => `${page.id}.${item.id}`;
+const usesSelection = (x) => (x.uses || []).some(u => u.startsWith('selected.'));
 
 async function loadPages() {
   try {
@@ -578,116 +599,136 @@ function showPage(id) {
   renderPageBar(page);
   renderPageBody(page);
   refreshToggles(page);
+  loadBlocks(page, page.blocks);
 }
 
-function itemKey(page, item) { return `${page.id}.${item.id}`; }
+// ---- selection ---------------------------------------------------------------
+
+function selectionList(page) { return page.blocks.find(b => b.id === page.selection); }
+
+function rowKeyOf(block, row) {
+  const col = block.key || block.columns[0]?.key || Object.keys(row)[0];
+  return row[col] === undefined ? undefined : String(row[col]);
+}
+
+// The picked row of the page's selection list, as last fetched (or null).
+function selectedRow(page) {
+  const list = selectionList(page);
+  const key = pageState.selected[page.id];
+  const rows = list && pageState.data[blockKey(page, list)]?.result?.rows;
+  if (key === undefined || !rows) return null;
+  return rows.find(r => rowKeyOf(list, r) === key) || null;
+}
+
+function select(page, list, row) {
+  const key = rowKeyOf(list, row);
+  if (pageState.selected[page.id] === key) return;
+  pageState.selected[page.id] = key;
+  savePagePrefs();
+  renderListRows(page, list);
+  renderPageBar(page);
+  // Everything that reads {{selected.*}} follows the pick.
+  loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+}
+
+// Placeholder values sent with a run: the picked row and, for a row button, its row.
+function runValues(page, row) {
+  const v = {};
+  const sel = selectedRow(page);
+  if (sel) v.selected = sel;
+  if (row) v.row = row;
+  return v;
+}
+
+// ---- toolbar -----------------------------------------------------------------
 
 function renderPageBar(page) {
+  const hasSelection = !!selectedRow(page);
   pageEls.bar.innerHTML = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
     const key = itemKey(page, item);
     const busy = pageState.running.has(key);
+    const blocked = usesSelection(item) && !hasSelection;
     if (item.kind === 'toggle') {
       const st = pageState.toggles[key];
       const on = st?.ok && st.on;
       const label = busy ? '…' : !st ? '' : !st.ok ? '?' : on ? 'ON' : 'OFF';
       const title = st && !st.ok ? st.error : `on: ${item.on}\noff: ${item.off}`;
       return `<button class="ext-toggle${on ? ' on' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
-        + ` role="switch" aria-checked="${on ? 'true' : 'false'}" title="${escapeHtml(title)}">`
+        + ` role="switch" aria-checked="${on ? 'true' : 'false'}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>`
         + `<span class="ext-sw"></span>${escapeHtml(item.label)} <span class="ext-state">${label}</span>`
         + (st?.ok && st.detail ? `<span class="ext-detail">${escapeHtml(st.detail)}</span>` : '') + '</button>';
     }
+    const title = blocked ? 'select a row first' : item.command;
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
-      + ` title="${escapeHtml(item.command)}">${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
+      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
   }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
-    el.onclick = () => pressItem(page, page.toolbar.find(i => i.id === el.dataset.item));
+    el.onclick = () => {
+      const item = page.toolbar.find(i => i.id === el.dataset.item);
+      if (!item) return;
+      const body = runValues(page);
+      if (item.kind === 'toggle') {
+        const st = pageState.toggles[itemKey(page, item)];
+        body.on = !(st?.ok && st.on);
+      }
+      runItem(page, item, itemKey(page, item), `/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, body);
+    };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
 }
 
-function renderPageBody(page) {
-  const areas = { left: [], main: [], bottom: [] };
-  for (const b of page.blocks) areas[b.area]?.push(b);
-  const body = pageEls.body;
-  body.classList.toggle('no-left', !areas.left.length);
-  body.classList.toggle('no-main', !areas.main.length);
-  body.innerHTML = page.blocks.length
-    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}"></div>`).join('')
-    : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
-  for (const [area, blocks] of Object.entries(areas)) {
-    const host = body.querySelector(`[data-area="${area}"]`);
-    for (const b of blocks) host?.insertAdjacentHTML('beforeend', `<section class="ext-block" data-block="${escapeHtml(b.id)}"></section>`);
-  }
-  renderBlocks(page);
-}
-
-function renderBlocks(page) {
-  for (const b of page.blocks) {
-    const el = pageEls.body.querySelector(`[data-block="${CSS.escape(b.id)}"]`);
-    if (el && b.kind === 'output') el.innerHTML = outputHtml(page);
-  }
-}
-
-// The page's last run: what ran, how it ended, what it printed.
-function outputHtml(page) {
-  const busy = page.toolbar.filter(i => pageState.running.has(itemKey(page, i)));
-  const run = pageState.last[page.id];
-  if (busy.length) {
-    return `<div class="blk-head"><span class="name">output</span><span class="cmd">running ${busy.map(i => escapeHtml(i.label)).join(', ')}…</span></div>`
-      + `<pre class="ext-out muted">${run ? escapeHtml(stripAnsi(run.output)) : ''}</pre>`;
-  }
-  if (!run) return '<div class="blk-head"><span class="name">output</span></div><div class="ext-empty">no run yet — press a toolbar button</div>';
-  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
-  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
-  const when = new Date(run.at).toLocaleTimeString();
-  return `<div class="blk-head"><span class="name">output</span><span class="cmd" title="${escapeHtml(run.command)}">$ ${escapeHtml(run.command)}</span>`
-    + `<span class="meta">${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${when}${then}</span></div>`
-    + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
-}
-
 async function refreshToggles(page) {
+  const sel = selectedRow(page);
+  const q = new URLSearchParams();
+  if (sel) for (const [k, v] of Object.entries(sel)) q.set(`selected.${k}`, typeof v === 'string' ? v : JSON.stringify(v));
   await Promise.all(page.toolbar.filter(i => i.kind === 'toggle').map(async (t) => {
     try {
-      const r = await api(`/api/pages/${encodeURIComponent(page.id)}/state/${encodeURIComponent(t.id)}`);
+      const r = await api(`/api/pages/${encodeURIComponent(page.id)}/state/${encodeURIComponent(t.id)}?${q}`);
       pageState.toggles[itemKey(page, t)] = await r.json();
     } catch (_) { /* server gone: the websocket reconnect reloads */ }
   }));
   if (currentPage() === page) renderPageBar(page);
 }
 
-async function pressItem(page, item) {
-  if (!item) return;
-  const key = itemKey(page, item);
+// Run a toolbar item or row button. An item marked confirm: true answers 428
+// with the exact command (values filled in); that is what the dialog shows.
+async function runItem(page, item, key, url, body) {
   if (pageState.running.has(key)) return;
-  const body = {};
-  if (item.kind === 'toggle') {
-    const st = pageState.toggles[key];
-    body.on = !(st?.ok && st.on);
-  } else if (item.confirm) {
-    if (!(await confirmRun(item))) return;
-    body.confirmed = true;
-  }
   pageState.running.add(key);
-  renderPageBar(page);
-  renderBlocks(page);
+  renderRunning(page);
   try {
-    const r = await api(`/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    if (j.exitCode === undefined) toast(`${item.label}: ${j.error || 'failed'}`); // busy, unknown item
-    else finishRun(page, item, j);
+    const post = (b) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    let r = await post(body);
+    let j = await r.json();
+    if (r.status === 428 && j.needsConfirm) {
+      pageState.running.delete(key);
+      renderRunning(page);
+      if (!(await confirmRun(item, j.command))) return;
+      pageState.running.add(key);
+      renderRunning(page);
+      r = await post({ ...body, confirmed: true });
+      j = await r.json();
+    }
+    if (j.exitCode === undefined) toast(`${item.label}: ${j.error || 'failed'}`); // busy, no selection, unknown
+    else finishRun(page, item, key, j);
   } catch (e) {
     toast(`${item.label} failed: ${e}`);
   } finally {
     pageState.running.delete(key);
-    if (currentPage() === page) { renderPageBar(page); renderBlocks(page); }
+    if (currentPage() === page) renderRunning(page);
   }
 }
 
-function finishRun(page, item, run) {
+function renderRunning(page) {
+  if (currentPage() !== page) return;
+  renderPageBar(page);
+  renderOutputs(page);
+  for (const b of page.blocks) if (b.kind === 'list') renderListRows(page, b);
+}
+
+function finishRun(page, item, key, run) {
   pageState.last[page.id] = run;
-  if (run.state) pageState.toggles[itemKey(page, item)] = run.state;
+  if (run.state) pageState.toggles[key] = run.state;
   toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
   if (run.then?.ok) scheduleRefresh(); // reloaded: show the new screen
 }
@@ -701,20 +742,307 @@ function onPageRun(msg) {
   else if (msg.event === 'finished') {
     pageState.running.delete(key);
     pageState.last[page.id] = msg.run;
-    const item = page.toolbar.find(i => i.id === msg.item);
-    if (item && msg.run?.state) pageState.toggles[key] = msg.run.state;
+    if (msg.run?.state) pageState.toggles[key] = msg.run.state;
   }
   if (currentPage() !== page) return;
-  renderPageBar(page);
-  renderBlocks(page);
-  // Any command may have changed what a toggle reports.
-  if (msg.event === 'finished') refreshToggles(page);
+  renderRunning(page);
+  if (msg.event !== 'finished') return;
+  // A command may have changed what the toggles and blocks report.
+  refreshToggles(page);
+  loadBlocks(page, page.blocks);
+}
+
+// A watched file changed: fetch those blocks again (or on the next visit).
+function onPageWatch(msg) {
+  for (const [pageId, ids] of Object.entries(msg.blocks || {})) {
+    const page = pageState.pages.find(p => p.id === pageId);
+    if (!page) continue;
+    const blocks = page.blocks.filter(b => ids.includes(b.id));
+    if (currentPage() === page) loadBlocks(page, blocks);
+    else for (const b of blocks) pageState.stale.add(blockKey(page, b));
+  }
+}
+
+// ---- blocks ------------------------------------------------------------------
+
+function renderPageBody(page) {
+  const areas = { left: [], main: [], bottom: [] };
+  for (const b of page.blocks) areas[b.area]?.push(b);
+  const body = pageEls.body;
+  body.classList.toggle('no-left', !areas.left.length);
+  body.classList.toggle('no-main', !areas.main.length);
+  body.innerHTML = page.blocks.length
+    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}"></div>`).join('')
+    : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
+  for (const [area, blocks] of Object.entries(areas)) {
+    const host = body.querySelector(`[data-area="${area}"]`);
+    for (const b of blocks) {
+      host?.insertAdjacentHTML('beforeend', `<section class="ext-block ${b.kind}" data-block="${escapeHtml(b.id)}"></section>`);
+      const el = blockEl(b);
+      if (b.kind === 'list') initList(page, b, el);
+      else if (b.kind === 'diff') initDiff(page, b, el);
+    }
+  }
+  renderOutputs(page);
+}
+
+function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
+
+function renderOutputs(page) {
+  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) el.innerHTML = outputHtml(page); }
+}
+
+// Fetch list rows / diff patches. A block that reads {{selected.*}} waits for
+// a pick — and, when the selection list is being fetched in the same batch,
+// for its answer. An answer for an older selection or segment is dropped.
+function loadBlocks(page, blocks) {
+  const list = selectionList(page);
+  const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
+  for (const b of blocks) {
+    if ((b.kind !== 'list' && b.kind !== 'diff') || waiting.includes(b)) continue;
+    pageState.stale.delete(blockKey(page, b));
+    loadBlock(page, b, b === list ? waiting : []);
+  }
+}
+
+// The query a block is fetched with, or null while it waits for a pick.
+function blockQuery(page, block) {
+  const q = new URLSearchParams();
+  if (usesSelection(block)) {
+    const sel = selectedRow(page);
+    if (!sel) return null;
+    for (const [k, v] of Object.entries(sel)) q.set(`selected.${k}`, typeof v === 'string' ? v : JSON.stringify(v));
+  }
+  if (block.kind === 'diff' && block.segments.length) q.set('seg', segOf(page, block));
+  return q.toString();
+}
+
+async function loadBlock(page, block, after = []) {
+  const key = blockKey(page, block);
+  const query = blockQuery(page, block);
+  if (query === null) { pageState.data[key] = { result: null, query: null }; renderBlockData(page, block); return; }
+  const entry = pageState.data[key] = { ...pageState.data[key], loading: true, query };
+  renderBlockData(page, block);
+  let result;
+  try {
+    result = await (await api(`/api/pages/${encodeURIComponent(page.id)}/blocks/${encodeURIComponent(block.id)}?${query}`)).json();
+  } catch (e) {
+    result = { ok: false, error: String(e) };
+  }
+  if (pageState.data[key] !== entry) return; // a newer fetch took over
+  pageState.data[key] = { result, query };
+  renderBlockData(page, block);
+  if (block.id !== page.selection) return;
+  renderPageBar(page); // buttons that need a pick
+  // What follows the pick: blocks waiting on this answer, and any whose row vanished or changed.
+  loadBlocks(page, page.blocks.filter(b => b.id !== block.id && usesSelection(b)
+    && (after.includes(b) || blockQuery(page, b) !== pageState.data[blockKey(page, b)]?.query)));
+}
+
+function renderBlockData(page, block) {
+  if (currentPage() !== page) return;
+  if (block.kind === 'list') renderListRows(page, block);
+  else if (block.kind === 'diff') renderDiffView(page, block);
+}
+
+// A block's status line when it has nothing (yet) to show.
+function blockNote(page, block, entry) {
+  if (entry?.loading && !entry.result) return '<div class="ext-empty">loading…</div>';
+  const r = entry?.result;
+  if (r === null || r?.needs === 'selected') {
+    const list = selectionList(page);
+    return `<div class="ext-empty">select a row${list ? ` in ${escapeHtml(list.title)}` : ''}</div>`;
+  }
+  if (r && !r.ok) return `<div class="ext-empty fail-mark">${escapeHtml(r.error || 'failed')}</div>`;
+  return '';
+}
+
+// list: a table of the JSON rows its command prints.
+function initList(page, block, el) {
+  const key = blockKey(page, block);
+  el.innerHTML = `<div class="blk-head"><span class="name">${escapeHtml(block.title)}</span>`
+    + `<span class="cmd" title="${escapeHtml(block.command)}">${escapeHtml(block.command)}</span>`
+    + `<span class="meta count" data-count></span>`
+    + `<input class="blk-search" type="text" placeholder="filter…" autocomplete="off" spellcheck="false" /></div>`
+    + '<div class="blk-scroll" data-rows></div>';
+  const search = el.querySelector('.blk-search');
+  search.value = pageState.search[key] || '';
+  search.addEventListener('input', () => { pageState.search[key] = search.value; renderListRows(page, block); });
+}
+
+function listColumns(block, rows) {
+  if (block.columns.length) return block.columns;
+  return Object.keys(rows[0] || {}).map(k => ({ key: k, format: 'text' }));
+}
+
+function cellText(v) {
+  if (v === null || v === undefined) return '';
+  return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v);
+}
+
+function cellHtml(v, format) {
+  if (format === 'chip') {
+    const s = typeof v === 'boolean' ? (v ? 'on' : 'off') : cellText(v);
+    const kind = v === true || /^(on|yes|true|ok)$/i.test(s) ? 'on' : !s || v === false || /^(off|no|false|none)$/i.test(s) ? 'off' : 'warn';
+    return s ? `<span class="chip ${kind}">${escapeHtml(s)}</span>` : '';
+  }
+  if (format === 'count') {
+    const n = Number(v) || 0;
+    return `<span class="${n ? 'count-hot' : 'muted'}">${n}</span>`;
+  }
+  return escapeHtml(cellText(v));
+}
+
+function renderListRows(page, block) {
+  const el = blockEl(block);
+  if (!el || currentPage() !== page) return;
+  const key = blockKey(page, block);
+  const entry = pageState.data[key];
+  const host = el.querySelector('[data-rows]');
+  const rows = entry?.result?.ok ? entry.result.rows : null;
+  el.classList.toggle('loading', !!entry?.loading);
+  if (!rows) { host.innerHTML = blockNote(page, block, entry); el.querySelector('[data-count]').textContent = ''; return; }
+  const cols = listColumns(block, rows);
+  const filter = (pageState.search[key] || '').toLowerCase();
+  const shown = filter ? rows.filter(r => cols.some(c => cellText(r[c.key]).toLowerCase().includes(filter))) : rows;
+  const selectable = block.id === page.selection;
+  const picked = selectable ? pageState.selected[page.id] : undefined;
+  el.querySelector('[data-count]').textContent = filter ? `${shown.length} / ${rows.length}` : `${rows.length}`;
+  const actions = block.rowActions;
+  host.innerHTML = rows.length
+    ? `<table class="lst"><thead><tr>${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th></th>' : ''}</tr></thead><tbody>`
+      + shown.map((r) => {
+        const rk = rowKeyOf(block, r);
+        return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
+          + cols.map(c => `<td>${cellHtml(r[c.key], c.format)}</td>`).join('')
+          + (actions.length ? `<td class="row-actions">${actions.map(a => {
+            const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+            return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(a.command)}">${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+          }).join('')}</td>` : '')
+          + '</tr>';
+      }).join('') + '</tbody></table>'
+      + (entry.result.truncated ? `<div class="ext-empty">first ${rows.length} of ${entry.result.truncated} rows</div>` : '')
+    : '<div class="ext-empty">no rows</div>';
+  const byKey = new Map(shown.map(r => [rowKeyOf(block, r) ?? '', r]));
+  host.querySelectorAll('tr[data-row]').forEach(tr => {
+    const row = byKey.get(tr.dataset.row);
+    if (selectable) tr.onclick = () => select(page, block, row);
+    tr.querySelectorAll('[data-action]').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation(); // a row button runs on its row; it doesn't change the pick
+        const a = actions.find(x => x.id === btn.dataset.action);
+        runItem(page, a, `${page.id}.${block.id}.${a.id}`,
+          `/api/pages/${encodeURIComponent(page.id)}/rows/${encodeURIComponent(block.id)}/${encodeURIComponent(a.id)}`,
+          runValues(page, row));
+      };
+    });
+  });
+}
+
+// diff: the unified diff its command prints, drawn like the Changes tab.
+function segOf(page, block) {
+  const s = pageState.seg[blockKey(page, block)];
+  return block.segments.includes(s) ? s : block.segments[0];
+}
+
+function initDiff(page, block, el) {
+  el.innerHTML = `<div class="blk-head"><span class="name" data-title>${escapeHtml(block.title)}</span>`
+    + `<span class="plus" data-plus></span><span class="minus" data-minus></span>`
+    + `<span class="cmd" data-cmd title="${escapeHtml(block.command)}"></span>`
+    + (block.segments.length ? `<span class="meta muted">vs</span><span class="seg" data-seg></span>` : '')
+    + '</div><section class="diff-view" data-diff></section>';
+  renderSegments(page, block, el);
+}
+
+function renderSegments(page, block, el) {
+  const host = el.querySelector('[data-seg]');
+  if (!host) return;
+  const cur = segOf(page, block);
+  host.innerHTML = block.segments.map(s => `<button class="${s === cur ? 'on' : ''}" data-s="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('');
+  host.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      pageState.seg[blockKey(page, block)] = b.dataset.s;
+      savePagePrefs();
+      renderSegments(page, block, el);
+      loadBlock(page, block);
+    };
+  });
+}
+
+function renderDiffView(page, block) {
+  const el = blockEl(block);
+  if (!el || currentPage() !== page) return;
+  const entry = pageState.data[blockKey(page, block)];
+  const r = entry?.result;
+  el.classList.toggle('loading', !!entry?.loading);
+  const sel = usesSelection(block) ? selectedRow(page) : null;
+  const list = selectionList(page);
+  el.querySelector('[data-title]').textContent = sel && list ? `${block.title} · ${rowKeyOf(list, sel)}` : block.title;
+  el.querySelector('[data-cmd]').textContent = r?.command || '';
+  const view = el.querySelector('[data-diff]');
+  if (!r?.ok) {
+    el.querySelector('[data-plus]').textContent = el.querySelector('[data-minus]').textContent = '';
+    view.innerHTML = blockNote(page, block, entry);
+    return;
+  }
+  const files = splitPatch(r.patch || '');
+  const added = files.reduce((n, f) => n + f.added, 0), deleted = files.reduce((n, f) => n + f.deleted, 0);
+  el.querySelector('[data-plus]').textContent = files.length ? `+${added}` : '';
+  el.querySelector('[data-minus]').textContent = files.length ? `−${deleted}` : '';
+  const top = view.scrollTop;
+  view.innerHTML = files.length
+    ? files.map(f => (f.path ? `<div class="dfile-head"><span class="path">${escapeHtml(f.path)}</span>`
+        + `<span class="plus">+${f.added}</span><span class="minus">−${f.deleted}</span></div>` : '') + renderPatch(f.patch)).join('')
+    : '<div class="diff-note">no differences</div>';
+  view.scrollTop = top; // a refresh of the same diff keeps the reader's place
+}
+
+// A multi-file unified diff → one entry per file (path from its +++/--- line).
+function splitPatch(patch) {
+  const files = [];
+  let cur = null;
+  const start = (path) => { cur = { path, lines: [], added: 0, deleted: 0 }; files.push(cur); };
+  const lines = patch.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('diff --git ')) { start(''); continue; }
+    if (line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) {
+      if (!cur || cur.lines.some(l => l.startsWith('@@'))) start('');
+      const strip = (p) => p.replace(/^[ab]\//, '').replace(/\t.*$/, '');
+      const to = lines[i + 1].slice(4), from = line.slice(4);
+      cur.path = strip(to === '/dev/null' ? from : to);
+      i++;
+      continue;
+    }
+    if (!cur) { if (!line.startsWith('@@')) continue; start(''); }
+    cur.lines.push(line);
+    if (line.startsWith('+')) cur.added++;
+    else if (line.startsWith('-')) cur.deleted++;
+  }
+  return files.filter(f => f.lines.some(l => l.startsWith('@@'))).map(f => ({ ...f, patch: f.lines.join('\n') }));
+}
+
+// output: the page's last run — what ran, how it ended, what it printed.
+function outputHtml(page) {
+  const busy = [...pageState.running].filter(k => k.startsWith(`${page.id}.`));
+  const run = pageState.last[page.id];
+  if (busy.length) {
+    return `<div class="blk-head"><span class="name">output</span><span class="cmd">running ${busy.map(k => escapeHtml(k.slice(page.id.length + 1))).join(', ')}…</span></div>`
+      + `<pre class="ext-out muted">${run ? escapeHtml(stripAnsi(run.output)) : ''}</pre>`;
+  }
+  if (!run) return '<div class="blk-head"><span class="name">output</span></div><div class="ext-empty">no run yet — press a toolbar button</div>';
+  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+  const when = new Date(run.at).toLocaleTimeString();
+  return `<div class="blk-head"><span class="name">output</span><span class="cmd" title="${escapeHtml(run.command)}">$ ${escapeHtml(run.command)}</span>`
+    + `<span class="meta">${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${when}${then}</span></div>`
+    + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
 }
 
 let confirmResolve = null;
-function confirmRun(item) {
+function confirmRun(item, command) {
   document.getElementById('confirm-title').textContent = `Run “${item.label}”?`;
-  document.getElementById('confirm-cmd').textContent = `$ ${item.command}`;
+  document.getElementById('confirm-cmd').textContent = `$ ${command}`;
   document.getElementById('confirm-then').textContent =
     item.then !== 'none' ? `then: hot ${item.then} when it succeeds` : '';
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = false;

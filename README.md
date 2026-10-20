@@ -773,10 +773,22 @@ pages:
       - action:
           id: publish
           label: publish…
-          run: [./tool/templates, publish, --target, ../cdn-checkout]
+          run: [./tool/templates, publish, "{{selected.name}}", --target, ../cdn-checkout]
           confirm: true
           timeout: 300
     blocks:
+      - list:
+          id: items
+          run: [./tool/templates, list, --json]       # prints [{"name": …, "local": true, …}, …]
+          columns: [name, version, local:chip, changes:count]
+          rowActions:
+            - action: { id: check, run: [./tool/templates, validate, "{{row.name}}"] }
+          watch: ["templates/**"]
+      - diff:
+          id: changes
+          run: [./tool/templates, diff, "{{selected.name}}", --against, "{{seg}}"]
+          segments: [base, stage, prod]
+          watch: ["templates/**"]
       - output: {}
 ```
 
@@ -787,7 +799,24 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body. `output` shows the page's last run: command, exit code, time, output |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom) |
+
+| Block | Its command prints | It shows |
+|-------|--------------------|----------|
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
+| `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
+| `output` | — | The page's last run: command, exit code, time, output |
+
+- Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
+  the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment.
+  They work only in `[program, arg, …]` commands, and each value stays inside its own
+  argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
+  is never run. A shell-string command with a placeholder is a config error.
+- An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`
+  item shows the command with the values filled in.
+- `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
+  changes — git-ignored work folders included. The picked row and segment are remembered
+  per browser.
 
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
@@ -807,7 +836,9 @@ pages:
 emu pages                          # pages, items and blocks (--json available)
 emu run templates.sync             # same as pressing the button: its output, then a result line
 emu run templates.local on         # a toggle takes on/off
-emu run templates.publish --yes    # confirm: true needs --yes
+emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
+emu block templates.items          # what a list shows, as a table
+emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```
 
 `emu run` exits 0 when the command and its `then:` reload/restart succeeded.

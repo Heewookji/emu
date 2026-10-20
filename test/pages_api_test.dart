@@ -200,7 +200,7 @@ void main() {
     (code, _) = await call('GET', '/api/pages/tools/run/hello');
     expect(code, 405);
     (code, _) = await call('GET', '/api/pages/tools/state/hello');
-    expect(code, 400); // not a toggle
+    expect(code, 404); // not a toggle
   });
 
   test('the last run per page is part of the listing; emu.yaml is re-read every time', () async {

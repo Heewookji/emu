@@ -107,6 +107,114 @@ void main() {
     });
   });
 
+  group('lists, diffs and placeholders', () {
+    PagesConfig parse(List<Map<String, dynamic>> blocks, {List<Map<String, dynamic>> toolbar = const []}) =>
+        parsePages([
+          {'id': 'p', 'toolbar': toolbar, 'blocks': blocks},
+        ]);
+
+    test('a list and a diff with their defaults', () {
+      final c = parse([
+        {
+          'list': {
+            'id': 'items',
+            'run': ['./tool/t', 'list', '--json'],
+            'columns': ['name', 'local:chip', 'changes:count'],
+            'rowActions': [
+              {'action': {'id': 'check', 'run': ['./tool/t', 'check', '{{row.name}}']}},
+            ],
+            'watch': 'templates/**',
+          },
+        },
+        {
+          'diff': {
+            'id': 'changes',
+            'run': ['./tool/t', 'diff', '{{selected.name}}', '--against', '{{seg}}'],
+            'segments': ['base', 'prod'],
+          },
+        },
+      ]);
+      expect(c.problems, isEmpty);
+      final page = c.page('p')!;
+      final list = page.block('items') as ListBlock;
+      expect(list.area, 'left');
+      expect(list.title, 'items');
+      expect([for (final col in list.columns) '${col.key}:${col.format}'], ['name:text', 'local:chip', 'changes:count']);
+      expect(list.rowAction('check')!.run.placeholders, {'row.name'});
+      expect(list.watch, ['templates/**']);
+      expect(page.selectionList, same(list));
+      final diff = page.block('changes') as DiffBlock;
+      expect(diff.area, 'main');
+      expect(diff.run.placeholders, {'selected.name', 'seg'});
+      expect(page.toJson()['selection'], 'items');
+    });
+
+    test('fill puts each value inside its own argument', () {
+      const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
+      final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});
+      expect(filled.argv, ['./tool/t', 'diff', r'--name=a b; rm -rf ~ $(id)', 'prod']);
+      expect(filled.display, r"./tool/t diff '--name=a b; rm -rf ~ $(id)' prod");
+      expect(() => cmd.fill({'seg': 'prod'}),
+          throwsA(isA<MissingValue>().having((e) => e.kind, 'kind', 'selected')));
+    });
+
+    test('placeholders are refused where they could run as code or have no value', () {
+      final c = parse(
+        [
+          {'list': {'id': 'items', 'run': ['./tool/t', 'list', '{{selected.name}}']}},
+          {'list': {'id': 'other', 'run': ['./tool/t', '{{row.name}}']}},
+          {'diff': {'id': 'd1', 'run': ['./tool/t', 'diff', '{{seg}}']}},
+          {'diff': {'id': 'd2', 'run': ['./tool/t', '{{selected}}']}},
+          {'diff': {'id': 'd3', 'run': ['./tool/t', '{{env.HOME}}']}},
+          {'diff': {'id': 'd4', 'run': ['./tool/t', '{{seg.x}}'], 'segments': ['a']}},
+          {'list': {'id': 'bad', 'run': ['./tool/t'], 'columns': ['name:bold']}},
+          {'list': {'id': 'w', 'run': ['./tool/t'], 'watch': ['../outside/**']}},
+        ],
+        toolbar: [
+          {'action': {'id': 'sh', 'run': './tool/t publish {{selected.name}}'}},
+          {'action': {'id': 'ok', 'run': ['./tool/t', 'publish', '{{selected.name}}']}},
+        ],
+      );
+      final all = c.problems.join('\n');
+      for (final expected in [
+        'p.sh.run: placeholders work only in the [program, arg, …] form',
+        "p.items.run: {{selected.*}} can't be used by the list that makes the selection",
+        "p.other.run: {{row.*}} only works in a list's rowActions",
+        'p.d1.run: {{seg}} only works in a diff block with segments',
+        'p.d2.run: {{selected}} needs a column',
+        'p.d3.run: unknown placeholder {{env.HOME}}',
+        'p.d4.run: {{seg}} takes no column',
+        'p.bad.columns: "name:bold" should be name or name:text|chip|count',
+        'p.w.watch: expected project-relative globs',
+      ]) {
+        expect(all, contains(expected));
+      }
+      expect(c.page('p')!.toolbar.map((i) => i.id), ['ok']);
+      expect(c.page('p')!.blocks, isEmpty);
+    });
+
+    test('watch globs match project-relative paths', () {
+      bool m(String glob, String path) => globToRegExp(glob).hasMatch(path);
+      expect(m('templates/**', 'templates/home.json'), isTrue);
+      expect(m('templates/**', 'templates/a/b.json'), isTrue);
+      expect(m('templates/**', 'lib/main.dart'), isFalse);
+      expect(m('**/*.json', 'a.json'), isTrue);
+      expect(m('**/*.json', 'x/y/a.json'), isTrue);
+      expect(m('templates/*.json', 'templates/a/b.json'), isFalse);
+      expect(m('./.local/**', '.local/x'), isTrue);
+      expect(m('config?.yaml', 'config1.yaml'), isTrue);
+      expect(m('a.b', 'aXb'), isFalse);
+
+      final c = parse([
+        {'list': {'id': 'items', 'run': ['./tool/t'], 'watch': ['templates/**']}},
+        {'diff': {'id': 'changes', 'run': ['./tool/t'], 'watch': ['templates/*.json', 'base/**']}},
+      ]);
+      expect(c.watching('templates/home.json'), {'p': ['items', 'changes']});
+      expect(c.watching('base/x'), {'p': ['changes']});
+      expect(c.watching('lib/main.dart'), isEmpty);
+    });
+  });
+
   test('shellQuote quotes only what sh would split or expand', () {
     expect(shellQuote('./tool/x'), './tool/x');
     expect(shellQuote('--target=../cdn'), '--target=../cdn');

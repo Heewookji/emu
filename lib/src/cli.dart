@@ -103,6 +103,8 @@ Future<int> runCli(List<String> argv) async {
         return await _pagesCmd(rest);
       case 'run':
         return await _runCmd(rest);
+      case 'block':
+        return await _blockCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -2098,16 +2100,21 @@ Future<int> _pagesCmd(List<String> args) async {
   }
   final pages = (data['pages'] as List).cast<Map<String, dynamic>>();
   if (pages.isEmpty) print('(no pages — add `pages:` to emu.yaml)');
+  // A cell padded to [w], and never touching the next one.
+  String col(Object? v, int w) => '$v'.length >= w ? '$v ' : '$v'.padRight(w);
   for (final page in pages) {
     print('${page['id']}  ${page['title']}');
     for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
       final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
       final notes = [if (i['then'] != 'none') 'then ${i['then']}', if (i['confirm'] == true) 'asks first'];
-      print('  ${'${i['kind']}'.padRight(7)}${'${i['id']}'.padRight(14)}$what'
-          '${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
+      print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
-      print('  ${'block'.padRight(7)}${'${b['id']}'.padRight(14)}${b['kind']} (${b['area']})');
+      final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
+      print('  ${col('block', 7)}${col(b['id'], 16)}${col('${b['kind']} (${b['area']})', 16)}${b['command'] ?? ''}$segs'.trimRight());
+      for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+        print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
+      }
     }
   }
   for (final problem in (data['problems'] as List? ?? const [])) {
@@ -2118,21 +2125,24 @@ Future<int> _pagesCmd(List<String> args) async {
 
 Future<int> _runCmd(List<String> args) async {
   final parser = ArgParser()
+    ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
     ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: true')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
-  const usage = 'usage: emu run <page>.<item> [on|off] [-y, --yes] [--json]\n'
+  const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
       '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), the same as\n'
       '   pressing it in the dashboard. A toggle takes on or off; an action marked\n'
-      '   confirm: true runs only with --yes. Exit 0 = the command and its\n'
-      '   then: reload/restart succeeded. `emu pages` lists the items.';
+      '   confirm: true runs only with --yes; --select fills {{selected.<col>}}.\n'
+      '   Exit 0 = the command and its then: reload/restart succeeded. `emu pages`\n'
+      '   lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final rest = res.rest;
   final target = rest.isEmpty ? '' : rest.first;
   final dot = target.indexOf('.');
+  final selects = res.multiOption('select');
   if (rest.isEmpty || rest.length > 2 || dot <= 0 || dot == target.length - 1 ||
-      (rest.length == 2 && rest[1] != 'on' && rest[1] != 'off')) {
+      (rest.length == 2 && rest[1] != 'on' && rest[1] != 'off') || selects.any((s) => s.indexOf('=') <= 0)) {
     stderr.writeln(usage);
     return 2;
   }
@@ -2141,7 +2151,12 @@ Future<int> _runCmd(List<String> args) async {
   final r = await _postJson(
     info,
     '/api/pages/${Uri.encodeComponent(page)}/run/${Uri.encodeComponent(item)}',
-    jsonEncode({'confirmed': res.flag('yes'), if (rest.length == 2) 'on': rest[1] == 'on'}),
+    jsonEncode({
+      'confirmed': res.flag('yes'),
+      if (rest.length == 2) 'on': rest[1] == 'on',
+      if (selects.isNotEmpty)
+        'selected': {for (final s in selects) s.substring(0, s.indexOf('=')): s.substring(s.indexOf('=') + 1)},
+    }),
     // The server bounds the command (its timeout:); this only must outlast it.
     timeout: const Duration(hours: 1),
   );
@@ -2159,7 +2174,8 @@ Future<int> _runCmd(List<String> args) async {
     return 1;
   }
   if (r['exitCode'] == null) {
-    stderr.writeln('✗ ${r['error']}'); // unknown page/item, already running, bad on/off
+    // Unknown page/item, already running, bad on/off, no selection.
+    stderr.writeln('✗ ${r['error']}${r['needs'] == 'selected' ? ' (--select <col>=<value>)' : ''}');
     return 1;
   }
   final output = '${r['output'] ?? ''}';
@@ -2176,6 +2192,93 @@ Future<int> _runCmd(List<String> args) async {
     stderr.writeln(line);
   }
   return ok ? 0 : 1;
+}
+
+Future<int> _blockCmd(List<String> args) async {
+  final parser = ArgParser()
+    ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
+    ..addOption('seg', help: 'what a diff block with segments compares against')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>] [--json]\n'
+      '   What a list or diff block of a dashboard page shows: the rows its command\n'
+      '   prints, as a table, or its diff. --select fills {{selected.<col>}} the way\n'
+      '   picking a row in the dashboard does; --seg picks a diff\'s segment.';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final target = res.rest.length == 1 ? res.rest.first : '';
+  final dot = target.indexOf('.');
+  final selects = res.multiOption('select');
+  if (dot <= 0 || dot == target.length - 1 || selects.any((s) => s.indexOf('=') <= 0)) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final page = target.substring(0, dot), block = target.substring(dot + 1);
+  final info = _requireServer();
+  final query = {
+    for (final s in selects) 'selected.${s.substring(0, s.indexOf('='))}': s.substring(s.indexOf('=') + 1),
+    if (res.option('seg') != null) 'seg': res.option('seg')!,
+  };
+  Map<String, dynamic>? r;
+  try {
+    final uri = Uri.parse('${info.baseUrl}/api/pages/${Uri.encodeComponent(page)}/blocks/${Uri.encodeComponent(block)}')
+        .replace(queryParameters: query.isEmpty ? null : query);
+    // The block's command is bounded by the server; this only must outlast it.
+    final resp = await http.get(uri, headers: info.headers).timeout(const Duration(minutes: 2));
+    r = jsonDecode(resp.body) as Map<String, dynamic>;
+  } catch (_) {
+    r = null;
+  }
+  if (r == null) {
+    stderr.writeln('✗ block: no response from the server');
+    return 1;
+  }
+  final ok = r['ok'] == true;
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return ok ? 0 : 1;
+  }
+  if (!ok) {
+    stderr.writeln('✗ ${r['error']}${r['needs'] == 'selected' ? ' (--select <col>=<value>)' : ''}');
+    return 1;
+  }
+  if (r['kind'] == 'diff') {
+    final patch = '${r['patch'] ?? ''}';
+    if (patch.trim().isEmpty) {
+      print('(no differences)');
+    } else {
+      stdout.write(patch.endsWith('\n') ? patch : '$patch\n');
+    }
+    return 0;
+  }
+  final rows = (r['rows'] as List).cast<Map<String, dynamic>>();
+  if (rows.isEmpty) {
+    print('(no rows)');
+    return 0;
+  }
+  print(_table(rows));
+  if (r['truncated'] != null) print('(first ${rows.length} of ${r['truncated']} rows)');
+  return 0;
+}
+
+/// [rows] as aligned columns (every key, in first-seen order).
+String _table(List<Map<String, dynamic>> rows) {
+  final cols = <String>{for (final r in rows) ...r.keys}.toList();
+  String cell(Object? v) {
+    final s = v == null ? '' : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
+    final line = s.replaceAll('\n', ' ');
+    return line.length > 48 ? '${line.substring(0, 47)}…' : line;
+  }
+
+  final widths = [
+    for (final c in cols) rows.fold(c.length, (w, r) => cell(r[c]).length > w ? cell(r[c]).length : w),
+  ];
+  String line(List<String> cells) =>
+      [for (var i = 0; i < cells.length; i++) cells[i].padRight(widths[i])].join('  ').trimRight();
+  return [
+    line(cols),
+    for (final r in rows) line([for (final c in cols) cell(r[c])]),
+  ].join('\n');
 }
 
 Future<int> _down(List<String> args) async {
@@ -2539,9 +2642,13 @@ COMMANDS
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
   pages                  List the dashboard pages declared in emu.yaml (`pages:`)
-  run <page>.<item> [on|off] [-y, --yes]
+  run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
                          Run a page's toolbar item, as its dashboard button does.
-                         A toggle takes on/off; confirm: true actions need --yes
+                         A toggle takes on/off; confirm: true actions need --yes;
+                         --select fills {{selected.<col>}}
+  block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
+                         What a page's list (rows) or diff block shows; --select
+                         fills {{selected.<col>}} like picking a row
   diff [--scope head|base|reload|pending] [--stat] [--all] [path...]
                          Changed code: uncommitted (head), since the base
                          branch (base), applied by the last reload (reload) or

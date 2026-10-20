@@ -712,10 +712,22 @@ pages:
       - action:
           id: publish
           label: publish…
-          run: [./tool/templates, publish, --target, ../cdn-checkout]
+          run: [./tool/templates, publish, "{{selected.name}}", --target, ../cdn-checkout]
           confirm: true
           timeout: 300
     blocks:
+      - list:
+          id: items
+          run: [./tool/templates, list, --json]       # [{"name": …, "local": true, …}, …] 출력
+          columns: [name, version, local:chip, changes:count]
+          rowActions:
+            - action: { id: check, run: [./tool/templates, validate, "{{row.name}}"] }
+          watch: ["templates/**"]
+      - diff:
+          id: changes
+          run: [./tool/templates, diff, "{{selected.name}}", --against, "{{seg}}"]
+          segments: [base, stage, prod]
+          watch: ["templates/**"]
       - output: {}
 ```
 
@@ -726,7 +738,22 @@ pages:
 | `then` | 명령이 성공하면 `reload` 또는 `restart`(기본 `none`) |
 | `confirm` | 대시보드가 실행할 명령을 그대로 보여 주고 묻는다. `emu run` 은 `--yes` 필요 |
 | `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
-| `blocks` | 페이지 본문의 패널. `output` 은 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래) |
+
+| 블록 | 명령이 출력하는 것 | 보여 주는 것 |
+|------|--------------------|--------------|
+| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
+| `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
+| `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+
+- 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
+  그 행. `{{seg}}` — diff 의 세그먼트. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
+  들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
+  명령에 치환을 쓰면 설정 오류다.
+- `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
+  보여 준다.
+- list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
+  작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
 
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
@@ -744,7 +771,9 @@ pages:
 emu pages                          # 페이지·항목·블록 목록(--json 가능)
 emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
 emu run templates.local on         # 토글은 on/off
-emu run templates.publish --yes    # confirm: true 는 --yes 필요
+emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
+emu block templates.items          # list 가 보여 주는 것을 표로
+emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```
 
 `emu run` 은 명령과 `then:` reload/restart 가 성공하면 0으로 끝난다.
