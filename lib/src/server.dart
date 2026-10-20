@@ -1154,8 +1154,12 @@ class EmuServer {
     }
     session.clearServerInfo();
     if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
-    for (final s in _sockets) {
-      await s.sink.close();
+    // Over a copy: closing a socket runs its onDone, which removes it from
+    // [_sockets] — iterating the set itself threw there, and the server never
+    // reached exit(). Bounded, so a client that never answers the close
+    // handshake can't hold the shutdown either.
+    for (final s in _sockets.toList()) {
+      await s.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {});
     }
     await engine.dispose();
     await logStore.close();
