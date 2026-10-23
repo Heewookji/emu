@@ -28,7 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_E), modifiers: UInt32(cmdKey | optionKey)) { [weak self] in self?.showHub() }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound]) { ok, _ in self.notificationsOK = ok }
+        center.requestAuthorization(options: [.alert, .sound]) { ok, _ in
+            DispatchQueue.main.async { self.notificationsOK = ok } // called on a background queue
+        }
         showHub()
         poll = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
     }

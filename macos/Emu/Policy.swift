@@ -60,8 +60,13 @@ enum Policy {
     /// make for themselves. Everything else goes to the default browser.
     static func isInternal(_ url: URL, hubPort: Int, sessionPorts: Set<Int>) -> Bool {
         switch url.scheme {
-        case "about", "blob":
+        case "about":
             return true
+        case "blob":
+            // blob:<origin>/<uuid> — only blobs the hub or a session page made.
+            let inner = String(url.absoluteString.dropFirst("blob:".count))
+            guard let origin = URL(string: inner), origin.scheme == "http" else { return false }
+            return isInternal(origin, hubPort: hubPort, sessionPorts: sessionPorts)
         case "http":
             guard let host = url.host, host == "127.0.0.1" || host == "localhost", let port = url.port else { return false }
             return port == hubPort || sessionPorts.contains(port)
@@ -131,6 +136,11 @@ enum Policy {
         check(!isInternal(u("https://127.0.0.1:4576/"), hubPort: 4576, sessionPorts: []), "https is not")
         check(isInternal(u("about:blank"), hubPort: 4576, sessionPorts: []), "about:blank is")
         check(!isInternal(u("file:///etc/passwd"), hubPort: 4576, sessionPorts: []), "file is not")
+        check(isInternal(u("blob:http://127.0.0.1:4578/9f1c"), hubPort: 4576, sessionPorts: [4578]), "a session blob is")
+        check(!isInternal(u("blob:http://127.0.0.1:9999/9f1c"), hubPort: 4576, sessionPorts: [4578]), "another origin's blob is not")
+        check(!isInternal(u("blob:https://example.com/9f1c"), hubPort: 4576, sessionPorts: []), "a remote blob is not")
+        check(!isInternal(u("data:text/html,hi"), hubPort: 4576, sessionPorts: []), "data is not")
+        check(!isInternal(u("javascript:alert(1)"), hubPort: 4576, sessionPorts: []), "javascript is not")
         check(opensExternally(u("https://example.com"), userClicked: true), "clicked link opens")
         check(!opensExternally(u("https://example.com"), userClicked: false), "scripted one does not")
         check(!opensExternally(u("file:///x"), userClicked: true), "file never opens")

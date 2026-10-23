@@ -129,10 +129,18 @@ Future<String?> installApp({Directory? bundle, void Function(String)? log}) asyn
     if (sign.exitCode != 0) return 'codesign failed: ${sign.stderr}';
 
     say('» installing ${target.path}');
-    if (target.existsSync()) target.deleteSync(recursive: true);
+    // Swap, never leave a half bundle: the old one is moved aside first (a
+    // running copy keeps working from it until it quits) and removed last.
     target.parent.createSync(recursive: true);
+    final old = Directory('${target.path}.old');
+    if (old.existsSync()) old.deleteSync(recursive: true);
+    if (target.existsSync()) target.renameSync(old.path);
     final mv = await Process.run('mv', [app.path, target.path]);
-    if (mv.exitCode != 0) return 'could not move the app into place: ${mv.stderr}';
+    if (mv.exitCode != 0) {
+      if (old.existsSync() && !target.existsSync()) old.renameSync(target.path);
+      return 'could not move the app into place: ${mv.stderr}';
+    }
+    if (old.existsSync()) old.deleteSync(recursive: true);
     return null;
   } finally {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
