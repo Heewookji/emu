@@ -14,6 +14,7 @@ import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
 import 'diff.dart';
+import 'hub.dart';
 import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
@@ -113,6 +114,8 @@ Future<int> runCli(List<String> argv) async {
         return await _down(rest);
       case 'ls':
         return await _ls(rest);
+      case 'hub':
+        return await _hubCmd(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -941,6 +944,10 @@ Future<int> _up(List<String> args) async {
   }
 
   print('✓ session up — dashboard: ${info.baseUrl}');
+  final hub = await runningHub();
+  print(hub != null
+      ? '  hub: ${hub.url}/#/s/${sessionIdFor(session.projectRoot.path)}'
+      : '  (every session in one place: emu hub)');
   print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
   final state = await _streamUntilReady(info, timeoutSec);
   if (state == 'failed') {
@@ -2658,6 +2665,67 @@ Future<int> _down(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
+// hub
+// --------------------------------------------------------------------------
+Future<int> _hubCmd(List<String> args) async {
+  const usage = 'usage: emu hub [--no-open] [--stop] [--json]\n'
+      '   One page for every running session (see docs/HUB.md): starts the hub\n'
+      '   (or reuses the running one) and opens it. --stop shuts it down; sessions\n'
+      '   are not affected either way.';
+  final bad = _checkArgs(args, usage, flags: const {'--no-open', '--stop'});
+  if (bad != null) return bad;
+  final json = args.contains('--json');
+  var hub = await runningHub();
+  if (args.contains('--stop')) {
+    if (hub == null) {
+      json ? print(jsonEncode({'ok': true, 'running': false})) : print('! no hub running');
+      return 0;
+    }
+    try {
+      await http.post(Uri.parse('${hub.url}/api/shutdown'),
+          headers: {'X-Emu-Token': hub.token ?? ''}).timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    json ? print(jsonEncode({'ok': true, 'stopped': hub.url})) : print('✓ hub stopped');
+    return 0;
+  }
+  final started = hub == null;
+  if (hub == null) {
+    final (exe, prefix) = _selfInvocation();
+    await Process.start(exe, [...prefix, '__hub'], mode: ProcessStartMode.detached);
+    for (var i = 0; i < 40 && hub == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      hub = await runningHub();
+    }
+    if (hub == null) {
+      stderr.writeln('✗ the hub did not start');
+      return 1;
+    }
+  }
+  if (json) {
+    print(jsonEncode({'ok': true, 'url': hub.url, 'started': started}));
+  } else {
+    print('${started ? '✓ hub started' : '✓ hub running'} — ${hub.url}');
+  }
+  if (!args.contains('--no-open')) await _openUrl(hub.url);
+  return 0;
+}
+
+/// The hidden `__hub` subcommand: run the hub until shut down.
+Future<int> runHub(List<String> args) async {
+  final hub = HubServer();
+  await hub.start();
+  final done = Completer<void>();
+  for (final sig in [ProcessSignal.sigint, ProcessSignal.sigterm]) {
+    sig.watch().listen((_) async {
+      await hub.close();
+      if (!done.isCompleted) done.complete();
+    });
+  }
+  await done.future;
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // ls
 // --------------------------------------------------------------------------
 Future<int> _ls(List<String> args) async {
@@ -3117,6 +3185,9 @@ COMMANDS
      --project <path|name|id>  stop that session instead of this project's
      --all                 stop every running session
   ls [--json]            List every running emu session on this machine
+  hub [--no-open] [--stop]
+                         One page for every session: a drawer of sessions, the
+                         picked one's dashboard beside it (http://127.0.0.1:4576)
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

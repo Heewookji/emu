@@ -6,7 +6,7 @@
 
 - 1단계: 세션 레지스트리 + 포트 자동 배정 + `emu ls`
 - 2단계: `emu hub` — 왼쪽 서랍(세션 목록·하단 버전 정보) + 오른쪽에 고른 세션의 기존 대시보드
-- (3단계, 이 문서 밖) 허브 URL 을 감싸는 macOS 메뉴바 앱
+- 3단계: 허브를 감싸는 macOS 앱(Swift WKWebView 얇은 껍데기 + 메뉴바)
 
 ## 지금 상태와 문제
 
@@ -62,7 +62,7 @@ $ emu ls
 - `emu hub [--no-open]`: 상주 서버. 이미 떠 있으면(`~/.emu/hub.json` 의 pid + 응답 확인) 브라우저만 연다.
 - 포트는 지정받지 않는다. 4576 을 먼저 쓰고, 쓰이고 있으면 다음 빈 포트를 쓴 뒤 실제 포트를
   `~/.emu/hub.json`(port·pid·token)에 기록한다. 모든 쪽(세션의 프레임 허용, `emu hub`, `emu up` 안내)은 이 파일을 본다.
-  평소 같은 포트를 쓰는 이유는 주소(origin)가 같아야 브라우저에 기억한 설정(서랍·테마·마지막 세션)과
+  평소 같은 포트를 쓰는 이유는 주소(origin)가 같아야 브라우저에 기억한 설정(서랍·접은 섹션·마지막 세션)과
   북마크·앱 창이 유지되기 때문이다.
 - `emu up` 은 허브를 띄우지 않는다. 허브가 떠 있으면 대시보드 링크와 함께 허브 링크를, 없으면 `emu hub` 를 한 줄 안내한다.
 - 세션이 없어도 뜬다(빈 상태 화면). 허브를 꺼도 세션에는 영향이 없다.
@@ -87,7 +87,7 @@ $ emu ls
 │ ────────────────────────│                                              │
 │ 최근 프로젝트           ▸│                                              │
 │ ────────────────────────│                                              │
-│ ⚙  ◐  v0.13.0 · 새 버전 0.14.0 │                                       │
+│ v0.13.0 · new 0.14.0           │                                       │
 └──────────────────────────┴──────────────────────────────────────────────┘
 ```
 - **서랍(왼쪽 240px)**: ☰ 로 접고 펼치며 이 브라우저에 기억한다. 좁은 폭(≤900px)에서는 화면 위에 덮어 열고,
@@ -100,7 +100,7 @@ $ emu ls
   - **기기**(접을 수 있음): `emu devices` + lease. 어느 세션이 잡고 있는지, 비어 있는 기기.
   - **최근 프로젝트**(접을 수 있음): 지금 안 떠 있는 프로젝트. [시작] 은 그 프로젝트에서 `emu up` 을 실행하고
     출력을 보여 준다(기기는 그 프로젝트의 `emu.yaml` 기본값, 필요하면 기기 고르기).
-  - **하단 바**: ⚙ 허브 설정 · 테마(라이트 → 다크 → 시스템) · 버전.
+  - **하단 바**: 버전(대시보드가 어두운 테마 하나뿐이라 테마 전환·설정은 두지 않는다).
     - 버전: 허브 바이너리 버전 `v0.13.0`. GitHub 최신 태그(`latestReleaseVersion`, 1시간 캐시)가 더 높으면
       `· 새 버전 0.14.0` 을 강조해 표시한다. 누르면 그 사이 CHANGELOG 절과 `emu update` 명령을 보여 준다.
     - 세션의 `emuVersion` 이 허브와 다르면 그 세션 줄에 `v0.12.0` 흐린 배지(다시 띄우면 새 버전).
@@ -116,7 +116,7 @@ $ emu ls
   3초마다 조회한다. 변화는 허브의 WebSocket 으로 서랍에 밀어 준다.
 - 세션 종료·restart 같은 동작은 허브 **서버**가 해당 프로젝트의 `.emu/server.json` 토큰으로 세션 API 를 부른다
   (CLI 와 같은 권한·같은 파일). 세션 토큰은 브라우저의 허브 페이지로 넘어가지 않는다.
-- 세션 대시보드 → 허브 알림(선택): iframe 안의 대시보드가 `postMessage({type:'emu-state', state, errors})` 를
+- (나중에) 세션 대시보드 → 허브 알림: iframe 안의 대시보드가 `postMessage({type:'emu-state', state, errors})` 를
   허브 origin 으로만 보낸다. 서랍 줄에 에러 수 배지를 붙이는 용도다. 받는 쪽은 `event.origin` 이 등록된 세션 포트인지 확인한다.
 
 ### 보안
@@ -132,9 +132,56 @@ $ emu ls
 - **"시작"으로 실행하는 경로**: 최근 프로젝트 목록(`projects.json`)에 있거나 사용자가 허브에서 직접 입력한
   경로에서 `pubspec.yaml` 이 있는 곳만 허용한다. 실행은 `emu up` 과 같은 인자 규칙을 따른다(셸 해석 없음).
 
+## 3단계 — macOS 앱
+
+허브를 감싸는 얇은 껍데기. 화면은 허브 그대로 쓰고 네이티브로 다시 만들지 않는다. Electron·Tauri 는 쓰지 않는다
+(번들·런타임 부담, 서버는 이미 로컬 웹). Linux·원격은 브라우저의 `emu hub` 를 그대로 쓴다.
+
+### 빌드·설치 — 서명 없이 이 PC 에서
+- `emu app install` 이 `swiftc` 로 `~/Applications/emu.app` 을 만든다(Xcode 프로젝트 없음, macOS 12+). iOS 빌드를
+  위해 Xcode 명령줄 도구가 있으므로 `swiftc` 도 있다. 이 PC 에서 빌드한 앱은 격리 속성이 없어 Gatekeeper
+  서명·notarization 이 필요 없다. `emu app uninstall`, `emu app open`.
+- Finder 로 뜬 앱의 PATH 는 최소라 flutter·adb·xcrun 을 못 찾는다 → 설치 때 셸의 `PATH` 와 emu 경로를
+  `Contents/Resources/app.json` 에 적고, 앱이 띄우는 허브(그리고 허브가 실행하는 `emu up`)가 이 PATH 를 물려받는다.
+- 앱 소스 해시를 `Info.plist` 에 적어 두고, `emu update` 는 앱이 설치돼 있고 해시가 바뀌었으면 다시 빌드한다.
+
+### 창
+- 열면 `~/.emu/hub.json` 으로 허브를 찾고, 없으면 `emu hub --no-open` 으로 띄운 뒤 그 주소를 WKWebView 로 연다.
+- 창 하나 = 허브. 크기·위치를 기억한다. ⋮ 의 "새 창으로 열기"는 허브 페이지가
+  `window.webkit.messageHandlers.emu.postMessage({type:'open-window', url})` 로 알려 오면 그 세션 대시보드만 담은
+  보조 창을 연다(기기 화면을 다른 모니터에 띄워 둘 때).
+- 이동 정책: 허브 origin 과 레지스트리의 세션 origin(127.0.0.1:<포트>)만 창 안. 사람이 누른 외부 링크(DevTools 등)는
+  기본 브라우저, 스크립트의 외부 이동은 막는다. 다운로드(▣ Shot)는 저장 패널, JS confirm 은 시트, 웹 프로세스가
+  죽으면 다시 불러온다.
+- 허브 연결이 끊기면(5초마다 `/api/status`, 3번 실패) "허브가 꺼졌어요" 화면 + [다시 켜기].
+
+### 메뉴바
+- 아이콘에 세션 수, 실패한 세션이 있으면 빨간 점. 펼치면 세션 목록(상태 점·이름·기기) → 누르면 창에서
+  `#/s/<id>`. 최근 프로젝트에서 시작, 모든 세션 종료(확인), 버전·업데이트.
+- 앱이 허브 API(`GET /api/sessions`, `hub.json` 토큰)를 직접 조회한다 — 창이 닫혀 있어도 동작.
+
+### 알림·단축키
+- 앱이 앞에 있지 않을 때만: 앱 실행 실패, 크래시(running → stopped/failed), 허브에서 시작한 `emu up` 완료.
+  알림을 누르면 그 세션.
+- ⌥⌘E 로 창 불러오기(Carbon HotKey, 접근성 권한 불필요).
+
+### 수명 주기
+- 창을 닫아도(⌘W) 메뉴바에 남는다. ⌘Q 는 앱과 앱이 띄운 허브만 끈다 — **세션은 끄지 않는다**(에이전트·CLI 가
+  쓰는 중일 수 있음). 로그인 시 열기는 설정.
+
+### 파일
+```
+macos/Emu/main.swift · AppDelegate.swift   메뉴, 생명주기, 알림, 단축키
+macos/Emu/HubWindow.swift                  WKWebView, 이동 정책, 다운로드, 시트, 끊김 화면, 브리지
+macos/Emu/StatusItem.swift                 메뉴바(허브 API 조회)
+macos/Emu/Policy.swift                     순수 판단(허용 주소, 알림 여부) + --self-test
+lib/src/app_install.dart                   emu app install|uninstall|open
+```
+
 ## 구현 순서(PR)
 1. **레지스트리 + 포트 자동 배정 + `emu ls` / `emu down --project|--all`** — `lib/src/registry.dart`, 서버 시작·종료
    지점, cli. 테스트: 쓰기·정리(죽은 pid), 포트 고르기, ls 출력.
-2. **허브 서버(4576 우선, 빈 포트 fallback) + 서랍 UI + iframe** — `lib/src/hub.dart`(shelf, 가드 재사용), `web/hub.html`·`hub.js`·`hub.css`
-   (기존 토큰·테마 변수 공유), 세션 쪽 `frame-ancestors` 변경, 하단 버전 표시.
-3. **허브 동작** — ⋮ 메뉴(종료·restart·경로), 기기 섹션, 최근 프로젝트 [시작], `postMessage` 배지.
+2. **허브 서버(4576 우선, 빈 포트 fallback) + 서랍 UI + iframe** — `lib/src/hub.dart`(shelf, 가드 재사용), `web/hub/index.html`·`hub.js`·`hub.css`
+   (대시보드와 같은 색 토큰), 세션 쪽 `frame-ancestors` 변경, 하단 버전 표시.
+3. **허브 동작** — ⋮ 메뉴(종료·restart·경로), 기기 섹션, 최근 프로젝트 [시작] — 2번 PR 에 같이 들어갔다.
+4. **macOS 앱** — 3단계.

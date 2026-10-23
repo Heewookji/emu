@@ -36,6 +36,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Core workflow: the agent debug loop](#core-workflow-the-agent-debug-loop)
 - [Command reference](#command-reference)
 - [Web dashboard](#web-dashboard)
+- [Session hub](#session-hub)
 - [Dashboard pages](#dashboard-pages)
 - [API mocks](#api-mocks)
 - [How it works](#how-it-works)
@@ -750,6 +751,32 @@ to its starting state is the leak signal this is built to catch.
   A dashboard tab left open across `emu down`/`up` reloads itself to pick up the new
   token. To call the API yourself:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## Session hub
+
+`emu hub` opens one page for every emu session running on this machine
+(`http://127.0.0.1:4576`, the next free port if taken):
+
+- **Drawer** (left, `☰` / `⌘\` hides it; `☰` stays put, over the dashboard's top bar, which makes room) — each session with a status dot,
+  name, port, device, state and uptime (a `mock` badge when `mocks:` is on; a
+  version badge when it was started by an older emu). The `⋮` menu: open in a
+  new window, copy the project path, show in Finder, hot reload/restart, stop
+  (`emu down`, after a confirm). **Recent projects** start one again (`emu up`
+  with its `emu.yaml` defaults). **Devices** shows who holds which device.
+  The footer shows the emu version and, when a newer release is out, what
+  changed and the `emu update` command.
+- **Main area** — the picked session's own dashboard. The last 3 picked stay
+  loaded, so switching back is instant and their log streams keep running.
+  `#/s/<id>` in the address picks a session.
+
+The hub only lists and frames sessions — each keeps its own server, and the
+CLI and agents keep talking to it directly. Closing or stopping the hub
+(`emu hub --stop`) leaves every session running. `emu up` prints the hub link
+when a hub is running; it never starts one. A session dashboard can be framed
+only by the running hub's origin (`frame-ancestors`), which cannot read the
+page — the session token stays inside it; actions on a session are made by the
+hub server with the token in that project's `.emu/server.json`, as the CLI does.
+Design: [`docs/HUB.md`](docs/HUB.md).
 
 ## Dashboard pages
 
