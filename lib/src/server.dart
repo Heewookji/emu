@@ -25,6 +25,7 @@ import 'input.dart';
 import 'locate.dart';
 import 'log_store.dart';
 import 'memory_diff.dart' as mem;
+import 'mock.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'pages.dart';
@@ -57,6 +58,7 @@ class LaunchOptions {
     this.onDeviceReady = const [],
     this.onAppStarted = const [],
     this.profile,
+    this.mockPort,
     this.extra = const [],
   });
 
@@ -102,6 +104,10 @@ class LaunchOptions {
 
   /// `up --profile`: the server re-reads `emu.yaml` for dashboard pages with it.
   final String? profile;
+
+  /// `mocks:` in emu.yaml: where the mock server listens (https origins;
+  /// http ones on the next port). Null when mocks are off.
+  final int? mockPort;
   final List<String> extra;
 }
 
@@ -171,6 +177,9 @@ class EmuServer {
 
   /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
   late final PagesApi pages;
+
+  /// `emu mock`, when emu.yaml has `mocks:` (see `mock.dart`).
+  MockServer? mock;
   Timer? _pagesChangedDebounce;
 
   /// Changed paths not yet checked against the pages' `watch:` globs.
@@ -216,6 +225,7 @@ class EmuServer {
     session.writeServerInfo(port: _http!.port, pid: pid, token: token);
     shelf_io.serveRequests(_http!, _handler());
     logStore.system('emu server listening on http://127.0.0.1:${_http!.port}');
+    if (opts.mockPort != null) await _startMock(opts);
 
     setup = DeviceSetup(
       reversePorts: opts.reversePorts,
@@ -525,6 +535,96 @@ class EmuServer {
     });
   }
 
+  Future<void> _startMock(LaunchOptions opts) async {
+    final server = MockServer(
+      projectRoot: session.projectRoot.path,
+      profile: opts.profile,
+      log: (hit) {
+        logStore.add('[mock] ${hit.line}',
+            level: hit.error != null ? LogLevel.error : (hit.scenario != null ? LogLevel.info : LogLevel.debug),
+            source: 'mock');
+        _broadcast({'type': 'mock-hit', 'hit': hit.toJson()});
+      },
+    );
+    for (final problem in server.load().problems) {
+      logStore.add('emu.yaml $problem', level: LogLevel.warn, source: 'system');
+    }
+    try {
+      await server.start(opts.mockPort!);
+      mock = server;
+      logStore.system('mock server on 127.0.0.1:${opts.mockPort} (http origins :${opts.mockPort! + 1}) — '
+          'off until `emu mock use <scenario>`');
+    } catch (e) {
+      logStore.add('mock server could not listen on ${opts.mockPort}: $e', level: LogLevel.error, source: 'system');
+    }
+  }
+
+  /// - `GET  /api/mock`                     config, scenarios (with rules), active
+  /// - `POST /api/mock {scenario|null}`      switch scenario / off
+  /// - `GET  /api/mock/log?n=`               recent requests
+  /// - `GET  /api/mock/hits/<id>`            one request, with bodies
+  /// - `PUT  /api/mock/scenarios/<name> {rules}`   write `<dir>/<name>.json`
+  /// - `DELETE /api/mock/scenarios/<name>`  remove it
+  Future<Response> _mockApi(Request req, String path) async {
+    final server = mock;
+    if (server == null) {
+      return _json({'ok': false, 'error': 'mocks are off — add `mocks:` to emu.yaml and run `emu up` again'},
+          status: 409);
+    }
+    if (path == '/api/mock/log') {
+      final n = int.tryParse(req.url.queryParameters['n'] ?? '') ?? 50;
+      final hits = server.recent;
+      return _json({'ok': true, 'hits': [for (final h in hits.skip(hits.length > n ? hits.length - n : 0)) h.toJson()]});
+    }
+    if (path.startsWith('/api/mock/hits/')) {
+      final hit = server.hit(int.tryParse(path.substring('/api/mock/hits/'.length)) ?? -1);
+      if (hit == null) return _json({'ok': false, 'error': 'no such request (only the last 200 are kept)'}, status: 404);
+      return _json({'ok': true, 'hit': hit.toJson(bodies: true)});
+    }
+    var config = server.load();
+    if (path.startsWith('/api/mock/scenarios/')) {
+      final name = Uri.decodeComponent(path.substring('/api/mock/scenarios/'.length));
+      if (req.method == 'PUT') {
+        Object? body;
+        try {
+          body = jsonDecode(await req.readAsString());
+        } catch (_) {}
+        final problems = writeScenario(config, session.projectRoot.path, name, body is Map ? body['rules'] : null);
+        if (problems.isNotEmpty) return _json({'ok': false, 'error': problems.join('\n'), 'problems': problems}, status: 400);
+        logStore.system('mock: saved scenario "$name" (${config.dir}/$name.json)');
+      } else if (req.method == 'DELETE') {
+        if (!deleteScenario(config, session.projectRoot.path, name)) {
+          return _json({'ok': false, 'error': 'no scenario file "$name" (emu.yaml scenarios are edited there)'},
+              status: 404);
+        }
+        if (server.active == name) server.active = null;
+        logStore.system('mock: deleted scenario "$name"');
+      } else {
+        return _json({'ok': false, 'error': 'use PUT or DELETE'}, status: 405);
+      }
+      config = server.load();
+      _broadcast({'type': 'mock', 'active': server.active});
+      return _json({'ok': true, 'active': server.active, 'port': server.port, ...config.toJson()});
+    }
+    if (req.method == 'POST') {
+      Object? body;
+      try {
+        body = jsonDecode(await req.readAsString());
+      } catch (_) {}
+      final name = body is Map ? body['scenario'] : null;
+      if (name != null && (name is! String || !config.scenarios.containsKey(name))) {
+        return _json({
+          'ok': false,
+          'error': 'no scenario "$name" in emu.yaml mocks (${config.scenarios.keys.join(', ')})',
+        }, status: 404);
+      }
+      server.active = name as String?;
+      logStore.system(name == null ? 'mock: off — every request goes to the real server' : 'mock: using "$name"');
+      _broadcast({'type': 'mock', 'active': name});
+    }
+    return _json({'ok': true, 'active': server.active, 'port': server.port, ...config.toJson()});
+  }
+
   Future<HttpServer> _bind(int requestedPort) async {
     // Try the requested port, then a small range, then an ephemeral port.
     for (final p in [requestedPort, requestedPort + 1, requestedPort + 2, 0]) {
@@ -677,6 +777,7 @@ class EmuServer {
         });
         return _json({'ok': true, 'message': 'shutting down'});
       default:
+        if (path == '/api/mock' || path.startsWith('/api/mock/')) return _mockApi(req, path);
         if (path == '/api/pages' || path.startsWith('/api/pages/')) return pages.handle(req, path);
         return _json({'error': 'not found'}, status: 404);
     }
@@ -1247,6 +1348,7 @@ class EmuServer {
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();
     _portWatch?.cancel();
+    await mock?.close();
     await _reapplyRun;
     final prepared = _preparedDevice;
     if (prepared != null && setup.hasPorts && platformForDeviceId(prepared) == 'android') {

@@ -18,6 +18,7 @@ import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
+import 'mock.dart';
 import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
@@ -105,6 +106,8 @@ Future<int> runCli(List<String> argv) async {
         return await _runCmd(rest);
       case 'block':
         return await _blockCmd(rest);
+      case 'mock':
+        return await _mockCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -818,6 +821,14 @@ Future<int> _up(List<String> args) async {
           ? 'ios'
           : pc.platform;
   final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
+
+  // `mocks:` — the app's emu_hook routes these hosts to the mock server: tell
+  // it where (dart-defines) and let an Android device reach it (adb reverse).
+  final mocks = parseMocks(pc.mocks);
+  for (final problem in mocks.problems) {
+    stderr.writeln('! emu.yaml $problem');
+  }
+  final mockPort = mocks.enabled ? mocks.portFor(int.tryParse(port) ?? _defaultPort) : null;
   if (tempDevice) {
     if (platform == null) {
       stderr.writeln('✗ --temp-device needs --android or --ios');
@@ -835,12 +846,18 @@ Future<int> _up(List<String> args) async {
     if (device != null && !tempDevice && bootAvd == null) '--device=$device',
     if (bootAvd != null) '--boot-avd=$bootAvd',
     for (final p in reversePorts) '--reverse-port=${parsePortMapping(p)!.spec}',
+    if (mockPort != null) ...['--reverse-port=${parsePortMapping('$mockPort')!.spec}',
+        '--reverse-port=${parsePortMapping('${mockPort + 1}')!.spec}'],
     for (final p in forwardPorts) '--forward-port=${parsePortMapping(p)!.spec}',
     for (final c in pc.onDeviceReady) '--on-device-ready=$c',
     for (final c in pc.onAppStarted) '--on-app-started=$c',
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
+    if (mockPort != null) '--mock-port=$mockPort',
+    if (mockPort != null && mocks.hook) ...['--dart-define=EMU_MOCK=127.0.0.1:$mockPort',
+        '--dart-define=EMU_MOCK_HOSTS=${mocks.hosts.join(',')}'],
+    if (mockPort != null && mocks.define != null) '--dart-define=${mocks.define}=http://127.0.0.1:$mockPort',
     for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
     for (final a in res.multiOption('dart-entrypoint-args')) '--dart-entrypoint-args=$a',
     if (res.option('device-timeout') != null)
@@ -2280,6 +2297,108 @@ Future<int> _runCmd(List<String> args) async {
   return exit;
 }
 
+// --------------------------------------------------------------------------
+// mock — canned API responses (see mock.dart, packages/emu_hook)
+// --------------------------------------------------------------------------
+Future<int> _mockCmd(List<String> args) async {
+  const usage = 'usage: emu mock                 scenarios, the active one, routed hosts\n'
+      '       emu mock use <scenario>  answer matching requests from that scenario\n'
+      '       emu mock off             send everything to the real server\n'
+      '       emu mock log [-n N]      the last requests the app sent through emu\n'
+      '   (all take --json) Needs `mocks:` in emu.yaml and emu_hook in the app; see README.';
+  final json = args.contains('--json');
+  final rest = args.where((a) => a != '--json').toList();
+  if (rest.contains('-h') || rest.contains('--help')) {
+    print(usage);
+    return 0;
+  }
+  final sub = rest.isEmpty ? 'status' : rest.first;
+  final n = rest.length == 3 && rest[1] == '-n' ? int.tryParse(rest[2]) : (rest.length == 1 ? 50 : null);
+  final valid = switch (sub) {
+    'status' => rest.length <= 1,
+    'use' => rest.length == 2,
+    'off' => rest.length == 1,
+    'log' => n != null && n > 0,
+    _ => false,
+  };
+  if (!valid) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final session = Session.require();
+  final info = session.readServerInfo();
+  if (info == null) {
+    // No session: still show what emu.yaml declares (and what's wrong with it).
+    if (sub != 'status') {
+      stderr.writeln('✗ no running session — `emu up` first');
+      return 1;
+    }
+    final config = parseMocks(loadProjectConfig(session.projectRoot.path).mocks);
+    if (json) {
+      print(jsonEncode({'ok': true, 'session': false, ...config.toJson()}));
+    } else {
+      _printMock(config.toJson(), active: null);
+      print('(no session — `emu up` starts the mock server)');
+    }
+    return config.problems.isEmpty ? 0 : 1;
+  }
+  final r = switch (sub) {
+    'use' => await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]})),
+    'off' => await _postJson(info, '/api/mock', jsonEncode({'scenario': null})),
+    'log' => await _getJson(info, '/api/mock/log?n=$n'),
+    _ => await _getJson(info, '/api/mock'),
+  };
+  if (sub == 'log' && r != null && r['ok'] == true && !json) {
+    final hits = (r['hits'] as List).cast<Map<String, dynamic>>();
+    if (hits.isEmpty) print('(no requests yet)');
+    for (final h in hits) {
+      final at = DateTime.parse(h['at'] as String).toLocal().toIso8601String().substring(11, 19);
+      print('$at  ${h['method']} ${h['url']} → ${h['error'] ?? h['status']}'
+          '${h['mocked'] != null ? '  [mock: ${h['mocked']}]' : ''}  ${h['ms']}ms');
+    }
+    return 0;
+  }
+  if (r == null) {
+    stderr.writeln('✗ mock: no response from the server');
+    return 1;
+  }
+  if (json) {
+    print(jsonEncode(r));
+    return r['ok'] == true ? 0 : 1;
+  }
+  if (r['ok'] != true) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  _printMock(r, active: r['active'] as String?, port: r['port'] as int?);
+  return 0;
+}
+
+void _printMock(Map<String, dynamic> m, {required String? active, int? port}) {
+  final hosts = (m['hosts'] as List).join(', ');
+  print('hosts:   ${hosts.isEmpty ? '(none)' : hosts}${port != null ? '   → 127.0.0.1:$port' : ''}');
+  if (m['upstream'] != null) {
+    print('base:    ${m['define'] != null ? '${m['define']}=http://127.0.0.1:${port ?? '<port>'}' : '(no define)'}'
+        '   → ${m['upstream']}');
+  }
+  print('active:  ${active ?? 'off (real server)'}');
+  final scenarios = (m['scenarios'] as Map).cast<String, dynamic>();
+  if (scenarios.isEmpty) print('(no scenarios — add mocks.scenarios to emu.yaml)');
+  final sources = (m['sources'] as Map? ?? const {}).cast<String, dynamic>();
+  for (final e in scenarios.entries) {
+    print('${e.key == active ? '▸' : ' '} ${e.key}   (${sources[e.key] ?? 'emu.yaml'})');
+    for (final r in (e.value as List).cast<Map<String, dynamic>>()) {
+      final match = r['match'] as Map, respond = r['respond'] as Map;
+      print('    ${match['method'] ?? '*'} ${match['url'] ?? match['path']} → ${respond['status']}'
+          '${respond['file'] != null ? '  ${respond['file']}' : ''}'
+          '${respond['delay'] != null ? '  +${respond['delay']}ms' : ''}');
+    }
+  }
+  for (final p in (m['problems'] as List)) {
+    stderr.writeln('! emu.yaml $p');
+  }
+}
+
 Future<int> _blockCmd(List<String> args) async {
   final parser = ArgParser()
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
@@ -2600,7 +2719,8 @@ Future<int> runServe(List<String> args) async {
     ..addMultiOption('reverse-port', splitCommas: false)
     ..addMultiOption('forward-port', splitCommas: false)
     ..addMultiOption('on-device-ready', splitCommas: false)
-    ..addMultiOption('on-app-started', splitCommas: false);
+    ..addMultiOption('on-app-started', splitCommas: false)
+    ..addOption('mock-port');
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -2630,6 +2750,7 @@ Future<int> runServe(List<String> args) async {
         onDeviceReady: res.multiOption('on-device-ready'),
         onAppStarted: res.multiOption('on-app-started'),
         profile: res.option('profile'),
+        mockPort: int.tryParse(res.option('mock-port') ?? ''),
       ),
     );
   } catch (e, st) {
