@@ -80,7 +80,9 @@ function setDrawer(open) {
     hub.classList.toggle('closed', !open);
     store('emu.hub.drawer', open ? '1' : '0');
   }
-  $('drawer-open').hidden = open;
+  const t = $('drawer-toggle');
+  t.title = `${open ? 'Hide' : 'Show'} the drawer (⌘\\)`;
+  t.setAttribute('aria-expanded', String(open));
 }
 const drawerOpen = () => (NARROW.matches ? $('hub').classList.contains('narrow-open') : !$('hub').classList.contains('closed'));
 
@@ -370,8 +372,7 @@ for (const t of document.querySelectorAll('[data-fold]')) {
 }
 if ($('device-list').closest('.dsec').classList.contains('open')) loadDevices();
 
-$('drawer-toggle').addEventListener('click', () => setDrawer(false));
-$('drawer-open').addEventListener('click', () => setDrawer(true));
+$('drawer-toggle').addEventListener('click', () => setDrawer(!drawerOpen()));
 $('drawer-back').addEventListener('click', () => setDrawer(false));
 $('modal-close').addEventListener('click', () => closeModal(false));
 $('modal').addEventListener('click', (e) => {

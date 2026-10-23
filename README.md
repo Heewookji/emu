@@ -757,7 +757,7 @@ to its starting state is the leak signal this is built to catch.
 `emu hub` opens one page for every emu session running on this machine
 (`http://127.0.0.1:4576`, the next free port if taken):
 
-- **Drawer** (left, `☰` / `⌘\` hides it) — each session with a status dot,
+- **Drawer** (left, `☰` / `⌘\` folds it to a rail — the `☰` button stays put) — each session with a status dot,
   name, port, device, state and uptime (a `mock` badge when `mocks:` is on; a
   version badge when it was started by an older emu). The `⋮` menu: open in a
   new window, copy the project path, show in Finder, hot reload/restart, stop
