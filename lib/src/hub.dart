@@ -72,11 +72,11 @@ HubInfo? recordedHub({File? file}) {
 }
 
 /// The running hub: recorded, alive, and answering as a hub.
-Future<HubInfo?> runningHub({File? file}) async {
+Future<HubInfo?> runningHub({File? file, Duration timeout = const Duration(seconds: 1)}) async {
   final info = recordedHub(file: file);
   if (info == null) return null;
   try {
-    final r = await http.get(Uri.parse('${info.url}/api/status')).timeout(const Duration(seconds: 1));
+    final r = await http.get(Uri.parse('${info.url}/api/status')).timeout(timeout);
     return r.statusCode == 200 && (jsonDecode(r.body) as Map)['hub'] == true ? info : null;
   } catch (_) {
     return null;
@@ -84,11 +84,16 @@ Future<HubInfo?> runningHub({File? file}) async {
 }
 
 /// `frame-ancestors` for a session dashboard: only the running hub's origin
-/// may frame it, nothing when no hub is up.
-String hubFrameAncestors({HubInfo? hub}) {
-  final h = hub ?? recordedHub();
-  return h == null ? "'none'" : 'http://127.0.0.1:${h.port} http://localhost:${h.port}';
+/// may frame it, nothing when no hub is up. Checks the hub answers as a hub
+/// (not just that its pid exists — a recycled pid must not open framing to
+/// whatever now listens on that port); bounded, it runs on every page load.
+Future<String> hubFrameAncestors({File? file, Duration timeout = const Duration(milliseconds: 400)}) async {
+  final h = await runningHub(file: file, timeout: timeout);
+  return frameAncestorsFor(h);
 }
+
+String frameAncestorsFor(HubInfo? hub) =>
+    hub == null ? "'none'" : 'http://127.0.0.1:${hub.port} http://localhost:${hub.port}';
 
 /// Changelog sections newer than [from], up to and including [to].
 String changelogBetween(String changelog, String from, String to) {
@@ -158,7 +163,8 @@ class HubServer {
       'startedAt': DateTime.now().toIso8601String(),
     }));
     shelf_io.serveRequests(_http!, const Pipeline().addMiddleware(apiGuard(token)).addHandler(_route));
-    _poll = Timer.periodic(pollInterval, (_) => unawaited(_push()));
+    // A failed poll (a registry file vanishing mid-read…) must not take the hub down.
+    _poll = Timer.periodic(pollInterval, (_) => unawaited(_push().catchError((_) {})));
   }
 
   static Future<HttpServer> _bind(int port) async {
@@ -283,8 +289,11 @@ class HubServer {
     if (path == '/api/devices' && get) return _json(await _devices());
     if (path == '/api/shutdown' && req.method == 'POST') {
       scheduleMicrotask(() async {
-        await close();
-        exit(0);
+        try {
+          await close();
+        } finally {
+          exit(0);
+        }
       });
       return _json({'ok': true});
     }

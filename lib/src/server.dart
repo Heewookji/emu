@@ -746,7 +746,7 @@ class EmuServer {
     }
 
     // Static dashboard.
-    return _static(path);
+    return await _static(path);
   }
 
   Future<Response> _api(Request req, String path) async {
@@ -1406,7 +1406,7 @@ class EmuServer {
     }
   }
 
-  Response _static(String path) {
+  Future<Response> _static(String path) async {
     var rel = path == '/' ? 'index.html' : path.substring(1);
     final bytes = readWebAsset(rel);
     if (bytes == null) return Response.notFound('not found: $rel');
@@ -1414,7 +1414,7 @@ class EmuServer {
     if (rel == 'index.html') {
       // Framed only by a running `emu hub` (its origin can't read the page —
       // the token stays in here), else by nothing.
-      final ancestors = hubFrameAncestors();
+      final ancestors = await hubFrameAncestors();
       return Response.ok(injectSessionToken(utf8.decode(bytes), token), headers: {
         'Content-Type': contentTypeFor(rel),
         // The page carries this session's token: never from cache (a restarted

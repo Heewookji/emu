@@ -107,9 +107,9 @@ function renderSessions() {
     const folder = dup.has(s.name) ? s.project.split('/').pop() : '';
     const device = s.device ? `${s.device.name || s.device.id}${s.device.platform ? ` · ${s.device.platform}` : ''}` : 'no device yet';
     const old = s.emuVersion && snap.version && s.emuVersion !== snap.version;
-    return `<div class="row${s.id === cur ? ' on' : ''}" data-id="${s.id}">
+    return `<div class="row${s.id === cur ? ' on' : ''}" data-id="${esc(s.id)}">
       <button class="pick" title="${esc(s.project)}">
-        <span class="l1"><i class="sdot ${esc(s.state)}" title="${esc(s.state)}"></i><span class="name">${esc(s.name)}</span>${folder && folder !== s.name ? `<span class="port">${esc(folder)}</span>` : ''}<span class="port">:${s.port}</span>
+        <span class="l1"><i class="sdot ${esc(s.state)}" title="${esc(s.state)}"></i><span class="name">${esc(s.name)}</span>${folder && folder !== s.name ? `<span class="port">${esc(folder)}</span>` : ''}<span class="port">:${esc(s.port)}</span>
           ${s.mockPort ? '<span class="badge" title="emu.yaml mocks: on">mock</span>' : ''}
           ${old ? `<span class="badge warn" title="Started by emu ${esc(s.emuVersion)} — restart the session (emu down, emu up) to use ${esc(snap.version)}">v${esc(s.emuVersion)}</span>` : ''}</span>
         <span class="l2">${esc(device)} · ${esc(s.state)} · ${ago(s.startedAt)}</span>

@@ -139,9 +139,15 @@ void main() {
   });
 
   group('hubFrameAncestors', () {
-    test('the running hub origin may frame a dashboard', () {
-      final h = HubInfo(port: 4576, pid: pid);
-      expect(hubFrameAncestors(hub: h), 'http://127.0.0.1:4576 http://localhost:4576');
+    test('the running hub origin may frame a dashboard', () async {
+      expect(frameAncestorsFor(HubInfo(port: 4576, pid: pid)), 'http://127.0.0.1:4576 http://localhost:4576');
+      expect(await hubFrameAncestors(file: File('${tmp.path}/hub.json')),
+          'http://127.0.0.1:${hub.port} http://localhost:${hub.port}');
+    });
+    test('a live pid that is not a hub does not count', () async {
+      // Our own pid is alive, but nothing answers as a hub on that port.
+      final f = File('${tmp.path}/other.json')..writeAsStringSync(jsonEncode({'port': fakeSession.port, 'pid': pid}));
+      expect(await hubFrameAncestors(file: f), "'none'");
     });
     test('a dead hub in hub.json does not count', () {
       final f = File('${tmp.path}/dead.json')..writeAsStringSync(jsonEncode({'port': 4576, 'pid': 999999}));
