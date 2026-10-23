@@ -8,7 +8,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'macos_sources.g.dart';
-import 'server.dart' show readWebAsset;
 import 'version.dart';
 
 /// `~/Applications/emu.app`.
@@ -93,7 +92,8 @@ Future<String?> installApp({Directory? bundle, void Function(String)? log}) asyn
     final build = await Process.run('xcrun', [
       'swiftc', '-swift-version', '5', '-O', '-target', '$arch-apple-macos12',
       '-o', '${macos.path}/emu',
-      for (final name in kEmbeddedMacSources.keys) '${src.path}/$name',
+      for (final name in kEmbeddedMacSources.keys)
+        if (name.endsWith('.swift')) '${src.path}/$name',
       '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'Carbon', '-framework', 'UserNotifications',
     ]);
     if (build.exitCode != 0) return 'swiftc failed:\n${build.stderr}${build.stdout}';
@@ -110,12 +110,18 @@ Future<String?> installApp({Directory? bundle, void Function(String)? log}) asyn
       'version': kEmuVersion,
       'rev': rev,
     }));
-    final png = readWebAsset('apple-touch-icon.png');
-    if (png != null) {
-      final icon = File('${tmp.path}/icon.png')..writeAsBytesSync(png);
-      // icns wants a standard size: scale up to 512 first.
-      await Process.run('sips', ['-z', '512', '512', icon.path, '--out', '${tmp.path}/icon512.png']);
-      await Process.run('sips', ['-s', 'format', 'icns', '${tmp.path}/icon512.png', '--out', '${res.path}/emu.icns']);
+    // macos/Emu/AppIcon.png (1024², full-bleed yellow) → every size iconutil wants.
+    final icon = File('${src.path}/AppIcon.png');
+    if (icon.existsSync()) {
+      final set = Directory('${tmp.path}/emu.iconset')..createSync();
+      for (final size in [16, 32, 128, 256, 512]) {
+        for (final scale in [1, 2]) {
+          final px = size * scale;
+          final name = 'icon_${size}x$size${scale == 2 ? '@2x' : ''}.png';
+          await Process.run('sips', ['-z', '$px', '$px', icon.path, '--out', '${set.path}/$name']);
+        }
+      }
+      await Process.run('iconutil', ['-c', 'icns', set.path, '-o', '${res.path}/emu.icns']);
     }
     // Ad-hoc signature: required to run on Apple silicon, and keeps the
     // notification permission tied to the bundle.

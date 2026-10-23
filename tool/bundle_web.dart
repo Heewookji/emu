@@ -42,19 +42,19 @@ void main() {
   _bundleMacSources();
 }
 
-/// macos/Emu/*.swift → lib/src/macos_sources.g.dart, so `emu app install`
+/// macos/Emu/*.swift (+ AppIcon.png) → lib/src/macos_sources.g.dart, so `emu app install`
 /// can build the macOS app from the binary alone.
 void _bundleMacSources() {
   final dir = Directory('macos/Emu');
   final files = dir.existsSync()
-      ? (dir.listSync().whereType<File>().where((f) => f.path.endsWith('.swift')).toList()
+      ? (dir.listSync().whereType<File>().where((f) => f.path.endsWith('.swift') || f.path.endsWith('.png')).toList()
         ..sort((a, b) => a.path.compareTo(b.path)))
       : <File>[];
   final sb = StringBuffer()
     ..writeln('// GENERATED FILE — do not edit by hand.')
     ..writeln('// Regenerate with: dart run tool/bundle_web.dart')
     ..writeln('//')
-    ..writeln('// The macOS app sources (macos/Emu/*.swift), base64, for `emu app install`.')
+    ..writeln('// The macOS app sources (macos/Emu/*.swift, AppIcon.png), base64, for `emu app install`.')
     ..writeln('library;')
     ..writeln()
     ..writeln('const Map<String, String> kEmbeddedMacSources = {');

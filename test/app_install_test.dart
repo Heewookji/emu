@@ -4,7 +4,8 @@ import 'package:test/test.dart';
 
 void main() {
   test('the app sources are embedded', () {
-    expect(kEmbeddedMacSources.keys, containsAll(['main.swift', 'AppDelegate.swift', 'HubWindow.swift', 'Policy.swift']));
+    expect(kEmbeddedMacSources.keys,
+        containsAll(['main.swift', 'AppDelegate.swift', 'HubWindow.swift', 'Policy.swift', 'AppIcon.png']));
   });
 
   test('rev changes with the sources, not their order', () {
