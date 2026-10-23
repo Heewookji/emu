@@ -22,6 +22,7 @@ import 'mock.dart';
 import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
+import 'registry.dart';
 import 'server.dart';
 import 'session.dart';
 import 'temp_device.dart';
@@ -110,6 +111,8 @@ Future<int> runCli(List<String> argv) async {
         return await _mockCmd(rest);
       case 'down':
         return await _down(rest);
+      case 'ls':
+        return await _ls(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -432,7 +435,7 @@ Future<int> _devices(List<String> args) async {
     for (final d in list) {
       final lease = held[d.id];
       print('  ${d.id}  ${d.name}  [${d.platform}${d.emulator ? ', emulator' : ''}]'
-          '${lease != null ? '  (in use: ${lease.project}, ${lease.dashboard})' : ''}');
+          '${lease != null ? '  (in use: ${projectNameOf(lease.project)} — ${lease.project}, ${lease.dashboard})' : ''}');
     }
   }
   if (avds.isNotEmpty) {
@@ -820,11 +823,23 @@ Future<int> _up(List<String> args) async {
       : res.flag('ios')
           ? 'ios'
           : pc.platform;
-  final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
+  // `mocks:` — parsed before the port: a session with mocks needs the mock
+  // server's ports free too.
+  final mocks = parseMocks(pc.mocks);
+  // No port asked for: the one this project last used (same dashboard origin,
+  // so the browser keeps its layout), else the first free one from 4577.
+  final port = res.wasParsed('port')
+      ? res.option('port')!
+      : pc.port != null
+          ? '${pc.port}'
+          : '${await pickSessionPort(
+              lastPort: RecentProjects().lastPort(session.projectRoot.path),
+              start: _defaultPort,
+              mockOffset: mocks.enabled && mocks.port == null ? 13 : null,
+            )}';
 
   // `mocks:` — the app's emu_hook routes these hosts to the mock server: tell
   // it where (dart-defines) and let an Android device reach it (adb reverse).
-  final mocks = parseMocks(pc.mocks);
   for (final problem in mocks.problems) {
     stderr.writeln('! emu.yaml $problem');
   }
@@ -2598,16 +2613,122 @@ String _table(List<Map<String, dynamic>> rows) {
 }
 
 Future<int> _down(List<String> args) async {
-  const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
-      '   Stop the session. --kill-device also powers off this session\'s device.\n'
+  const usage = 'usage: emu down [--project <path|name|id> | --all] [--kill-device] [--keep-device]\n'
+      '   Stop the session (of this project, or the one --project names; --all: every\n'
+      '   running session, see `emu ls`). --kill-device also powers off its device.\n'
       '   A --temp-device session\'s device is deleted unless --keep-device, which\n'
       '   keeps it as a regular AVD/simulator (delete it yourself when done);\n'
       '   with --kill-device too, it is kept but powered off.';
-  final bad = _checkArgs(args, usage, flags: const {'--kill-device', '--keep-device'});
+  final project = _optionValue(args, '--project');
+  final bad = _checkArgs(
+      [for (final a in args) if (a != project && !a.startsWith('--project=')) a], usage,
+      flags: const {'--kill-device', '--keep-device', '--all', '--project'});
   if (bad != null) return bad;
   final killDevice = args.contains('--kill-device');
   final keepDevice = args.contains('--keep-device');
-  final session = Session.require();
+  if (args.contains('--all') || project != null) {
+    final live = await SessionRegistry().live();
+    final List<SessionEntry> targets;
+    if (args.contains('--all')) {
+      targets = live;
+    } else {
+      final match = matchSessions(live, project!);
+      if (match.length != 1) {
+        stderr.writeln(match.isEmpty
+            ? '✗ no running session matches "$project" — see `emu ls`'
+            : '✗ "$project" matches ${match.length} sessions: '
+                '${match.map((e) => '${e.name} (${e.project})').join(', ')} — use the path or id');
+        return 1;
+      }
+      targets = match;
+    }
+    if (targets.isEmpty) {
+      print('! no running session');
+      return 0;
+    }
+    var code = 0;
+    for (final e in targets) {
+      print('${e.name}  ${e.project}');
+      final c = await _downSession(Session(Directory(e.project)), killDevice: killDevice, keepDevice: keepDevice);
+      if (c != 0) code = c;
+    }
+    return code;
+  }
+  return _downSession(Session.require(), killDevice: killDevice, keepDevice: keepDevice);
+}
+
+// --------------------------------------------------------------------------
+// ls
+// --------------------------------------------------------------------------
+Future<int> _ls(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu ls [--json]\n'
+      '   Every running emu session on this machine (from ~/.emu/sessions).');
+  if (bad != null) return bad;
+  final live = await SessionRegistry().live();
+  final states = await Future.wait(live.map(_appState));
+  if (args.contains('--json')) {
+    print(jsonEncode({
+      'sessions': [
+        for (var i = 0; i < live.length; i++) {...live[i].toJson(), 'state': states[i]},
+      ],
+    }));
+    return 0;
+  }
+  if (live.isEmpty) {
+    print('no running emu session');
+    return 0;
+  }
+  final home = Platform.environment['HOME'];
+  final rows = [
+    for (var i = 0; i < live.length; i++)
+      [
+        live[i].name,
+        ':${live[i].port}',
+        live[i].deviceId == null
+            ? '—'
+            : '${live[i].deviceName ?? live[i].deviceId}${live[i].platform == null ? '' : ' (${live[i].platform})'}',
+        states[i] ?? '?',
+        _ago(live[i].startedAt),
+        home != null && live[i].project.startsWith('$home/')
+            ? '~${live[i].project.substring(home.length)}'
+            : live[i].project,
+      ],
+  ];
+  final widths = [for (var c = 0; c < 5; c++) rows.map((r) => r[c].length).reduce((a, b) => a > b ? a : b)];
+  for (final r in rows) {
+    print([for (var c = 0; c < 5; c++) r[c].padRight(widths[c]), r[5]].join('  '));
+  }
+  return 0;
+}
+
+/// The app state a session server reports (no token needed for this).
+Future<String?> _appState(SessionEntry e) async {
+  try {
+    final r = await http.get(Uri.parse('${e.dashboard}/api/status')).timeout(const Duration(seconds: 1));
+    return (jsonDecode(r.body) as Map)['state'] as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
+String _ago(DateTime t) {
+  final d = DateTime.now().difference(t);
+  if (d.inDays > 0) return '${d.inDays}d';
+  if (d.inHours > 0) return '${d.inHours}h';
+  if (d.inMinutes > 0) return '${d.inMinutes}m';
+  return '${d.inSeconds}s';
+}
+
+/// `--name value` or `--name=value` in [args].
+String? _optionValue(List<String> args, String name) {
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] == name && i + 1 < args.length) return args[i + 1];
+    if (args[i].startsWith('$name=')) return args[i].substring(name.length + 1);
+  }
+  return null;
+}
+
+Future<int> _downSession(Session session, {required bool killDevice, required bool keepDevice}) async {
   final info = session.readServerInfo();
   if (info == null || !await _ping(info)) {
     print('! no running session');
@@ -2911,7 +3032,8 @@ COMMANDS
                             device discovery mode
      --dds-port <n>        bind the Dart Developer Service to this port
      --no-dds              disable the Dart Developer Service
-     --port <n>            Dashboard port (default 4577)
+     --port <n>            Dashboard port (default: the port this project last
+                           used, else the first free one from 4577)
      --timeout <s>         wait for running/failed before returning (default 240)
      --open                Open the dashboard in the browser
   reload                 Hot reload (reports errors logged just after)
@@ -2992,6 +3114,9 @@ COMMANDS
   down [--kill-device] [--keep-device]
                          Stop the session (optionally power off this session's device;
                          a --temp-device session's device is deleted unless --keep-device)
+     --project <path|name|id>  stop that session instead of this project's
+     --all                 stop every running session
+  ls [--json]            List every running emu session on this machine
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

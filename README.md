@@ -169,7 +169,8 @@ What this loop gives an agent:
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
 | `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
-| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is deleted unless `--keep-device` |
+| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is deleted unless `--keep-device`. `--project <path\|name\|id>` ends another project's session, `--all` every session |
+| `emu ls [--json]` | Every running emu session on this machine — project, port, device, app state, uptime (from `~/.emu/sessions/`) |
 | `emu stop` | Stop only the app (server stays up) |
 | `emu attach` | Re-connect to the app still running on the device after `flutter` lost it (e.g. another session restarted the adb server → `Lost connection to device`). The server already tries this once by itself — see [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | Session/device/app status + VM Service URI |
@@ -207,7 +208,7 @@ What this loop gives an agent:
 | `--share-device` | Use the device even if another emu session holds it (inputs/screenshots of both sessions may interleave) |
 | `--temp-device` | With `--android`/`--ios`: create a throwaway AVD/simulator (`emu_tmp_<project>_<id>`) for this session and delete it on `emu down` |
 | `--boot-avd <name>` | Boot that Android AVD (or take it if already running) and claim it in one step |
-| `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
+| `--port <n>` | Dashboard port. Default: the port this project last used, else the first free one from 4577 (with `mocks:`, the mock server's ports must be free too) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |
 
@@ -1034,6 +1035,11 @@ Each server records a lease in `~/.emu/devices/<device-id>.json`
   `--ios`/`--device` when running sessions in parallel.
 - A lease whose server died (crash, `kill -9`) is reclaimed automatically.
 - `--share-device` opts out (no lease is taken). `emu devices` shows who holds what.
+- Every running server is also listed in `~/.emu/sessions/<id>.json` (project,
+  port, device — no token), so `emu ls` shows all sessions and
+  `emu down --project`/`--all` ends one from anywhere. A crashed server's entry is
+  dropped by the next reader. `~/.emu/projects.json` remembers each project's
+  last port, so its dashboard keeps the same address.
 - `--temp-device` (with `--android`/`--ios`) gives the session its own fresh
   device instead: emu creates an AVD (newest installed phone system image for
   the host ABI) or a simulator (newest iOS runtime, base iPhone model), and
