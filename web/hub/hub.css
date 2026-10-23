@@ -31,11 +31,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .hub.inset #drawer-toggle { background: var(--bg-alt); }
 .hub.inset #drawer-toggle:hover { background: var(--bg-hover); }
 .drawer-back { display: none; }
-.dtop { display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px 44px; min-height: 44px; }
-.brand { font-weight: 700; font-size: 15px; letter-spacing: .5px; display: flex; align-items: center; gap: 7px; }
-.brand-icon { width: 20px; height: 20px; border-radius: 5px; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--error); }
-.dot.on { background: var(--ok); }
+/* The first header shares its row with the floating ☰. */
+.dsec[data-sec="sessions"] { padding-top: 0; }
+.dsec[data-sec="sessions"] > .dhead { min-height: 44px; padding: 0 10px 0 38px; }
+.drawer.offline .dlist { opacity: .5; }
 
 .dsec { display: flex; flex-direction: column; min-height: 0; padding: 4px 6px; border-top: 1px solid var(--border); }
 .dsec[data-sec="sessions"] { flex: 1; border-top: 0; }

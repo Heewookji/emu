@@ -317,9 +317,15 @@ function confirmModal(title, html, ok) {
 // ---- live updates ------------------------------------------------------------
 
 let retry = 500;
+let online = true; // tell once when the hub goes away, once when it is back
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/api/stream?token=${encodeURIComponent(TOKEN)}`);
-  ws.onopen = () => { retry = 500; $('conn-dot').className = 'dot on'; $('conn-dot').title = 'connected'; };
+  ws.onopen = () => {
+    retry = 500;
+    if (!online) toast('Reconnected to the hub');
+    online = true;
+    $('drawer').classList.remove('offline');
+  };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'sessions') onSnapshot(msg);
@@ -329,8 +335,9 @@ function connect() {
     }
   };
   ws.onclose = () => {
-    $('conn-dot').className = 'dot';
-    $('conn-dot').title = 'disconnected — is the hub still running? (emu hub)';
+    if (online) toast('Lost the hub — reconnecting… (is `emu hub` still running?)', true);
+    online = false;
+    $('drawer').classList.add('offline');
     // A restarted hub has a new token: this call gets 401 and reloads the page.
     setTimeout(() => { api('/api/sessions').then(onSnapshot).catch(() => {}); connect(); }, retry);
     retry = Math.min(retry * 2, 8000);
