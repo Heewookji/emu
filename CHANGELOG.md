@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-23
+
 ### Added
 - API 목업 — `emu.yaml` `mocks:` 로 앱의 API 요청에 미리 정한 응답(상태·헤더·본문·지연)을 돌려주고, 나머지는
   실서버로 그대로 보낸다. 앱 연결은 두 방식: `packages/emu_hook`(앱에 한 줄, `EMU_MOCK` dart-define 이 있을 때만
@@ -292,7 +294,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/HuanSuh/emu/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HuanSuh/emu/compare/v0.9.0...v0.10.0
