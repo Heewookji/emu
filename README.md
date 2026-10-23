@@ -778,6 +778,25 @@ page — the session token stays inside it; actions on a session are made by the
 hub server with the token in that project's `.emu/server.json`, as the CLI does.
 Design: [`docs/HUB.md`](docs/HUB.md).
 
+### macOS app
+
+`emu app install` builds `~/Applications/emu.app` on this machine (`swiftc`
+from the Xcode command line tools — no download, no signing service), a thin
+window around the hub:
+
+- The hub in its own window (⌥⌘E brings it up from anywhere); "Open in a new
+  window" opens one session's dashboard by itself — handy for a second screen.
+- A menu bar item with the session count (`!` when one failed): pick a session,
+  start a recent project, stop all sessions.
+- Notifications while the app is in the background: an app that failed or
+  stopped, a session that came up. Clicking one opens that session.
+- Starts the hub if none is running; quitting stops only a hub it started —
+  never a session. Links out (DevTools) open in the default browser.
+
+`emu app status|open|uninstall`. The app keeps the `PATH` of the shell it was
+installed from (Finder gives apps a minimal one), and `emu update` rebuilds it
+when its sources changed.
+
 ## Dashboard pages
 
 A project can add its own tools to the dashboard — a local-template switch, a

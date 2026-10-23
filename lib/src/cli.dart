@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:http/http.dart' as http;
 
+import 'app_install.dart';
 import 'assertions.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
@@ -116,6 +117,8 @@ Future<int> runCli(List<String> argv) async {
         return await _ls(rest);
       case 'hub':
         return await _hubCmd(rest);
+      case 'app':
+        return await _appCmd(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -296,6 +299,13 @@ Future<int> _update(List<String> args) async {
   if (build.exitCode != 0) {
     fail('build failed: ${build.stderr}\n${build.stdout}');
     return 1;
+  }
+
+  // The macOS app, if installed, is rebuilt by the new binary when its sources changed.
+  if (appBundle().existsSync()) {
+    if (!json) print('» updating the macOS app');
+    final app = await Process.run('${repo.path}/emu', ['app', 'install', '--if-changed']);
+    if (app.exitCode != 0 && !json) print('! could not rebuild the app: ${app.stderr}${app.stdout}');
   }
 
   if (json) {
@@ -2710,6 +2720,77 @@ Future<int> _hubCmd(List<String> args) async {
   return 0;
 }
 
+// --------------------------------------------------------------------------
+// app (macOS)
+// --------------------------------------------------------------------------
+Future<int> _appCmd(List<String> args) async {
+  const usage = 'usage: emu app <install|uninstall|open|status> [--open] [--if-changed] [--json]\n'
+      '   The macOS app around `emu hub`: a window with the hub, a menu bar list of\n'
+      '   sessions, notifications, ⌥⌘E. Built here with swiftc into ~/Applications/emu.app.\n'
+      '   install --if-changed: only when installed and its sources changed (emu update).';
+  final sub = args.where((a) => !a.startsWith('-')).firstOrNull;
+  final bad = _checkArgs(args, usage, flags: const {'--open', '--if-changed'}, positional: 1);
+  if (bad != null) return bad;
+  final json = args.contains('--json');
+  final bundle = appBundle();
+  final installed = bundle.existsSync();
+  switch (sub) {
+    case 'install':
+      if (args.contains('--if-changed') && (!installed || installedAppRev() == appSourcesRev())) {
+        if (json) print(jsonEncode({'ok': true, 'skipped': true}));
+        return 0;
+      }
+      final error = await installApp(log: json ? null : print);
+      if (error != null) {
+        json ? print(jsonEncode({'ok': false, 'error': error})) : stderr.writeln('✗ $error');
+        return 1;
+      }
+      if (json) {
+        print(jsonEncode({'ok': true, 'path': bundle.path, 'rev': appSourcesRev()}));
+      } else {
+        print('✓ installed ${bundle.path}');
+        if (await appRunning()) print('  the app is running — quit it (⌘Q) and open it again to use the new build');
+      }
+      if (args.contains('--open')) await Process.run('open', [bundle.path]);
+      return 0;
+    case 'uninstall':
+      if (installed) {
+        await Process.run('osascript', ['-e', 'quit app "${bundle.path}"']);
+        bundle.deleteSync(recursive: true);
+      }
+      json ? print(jsonEncode({'ok': true, 'removed': installed})) : print(installed ? '✓ removed ${bundle.path}' : '! not installed');
+      return 0;
+    case 'open':
+      if (!installed) {
+        stderr.writeln('✗ not installed — run `emu app install`');
+        return 1;
+      }
+      await Process.run('open', [bundle.path]);
+      return 0;
+    case 'status':
+    case null:
+      final rev = installedAppRev();
+      final status = {
+        'installed': installed,
+        'path': bundle.path,
+        'current': installed ? rev == appSourcesRev() : null,
+        'running': installed && await appRunning(),
+      };
+      if (json) {
+        print(jsonEncode({'ok': true, ...status}));
+      } else if (!installed) {
+        print('not installed — `emu app install` builds ~/Applications/emu.app (macOS)');
+      } else {
+        print('${bundle.path}${status['running'] == true ? ' (running)' : ''}'
+            '${status['current'] == true ? '' : ' — older build, `emu app install` to update'}');
+      }
+      return 0;
+    default:
+      stderr.writeln(usage);
+      return 2;
+  }
+}
+
 /// The hidden `__hub` subcommand: run the hub until shut down.
 Future<int> runHub(List<String> args) async {
   final hub = HubServer();
@@ -3185,6 +3266,8 @@ COMMANDS
      --project <path|name|id>  stop that session instead of this project's
      --all                 stop every running session
   ls [--json]            List every running emu session on this machine
+  app <install|uninstall|open|status>
+                         macOS app around the hub (~/Applications/emu.app, built here)
   hub [--no-open] [--stop]
                          One page for every session: a drawer of sessions, the
                          picked one's dashboard beside it (http://127.0.0.1:4576)

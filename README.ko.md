@@ -710,6 +710,20 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 그 페이지를 읽을 수 없어 세션 토큰은 그 안에만 있다. 세션에 대한 동작은 허브 서버가 그 프로젝트의
 `.emu/server.json` 토큰으로 한다(CLI 와 같은 방식). 설계: [`docs/HUB.md`](docs/HUB.md).
 
+### macOS 앱
+
+`emu app install` 이 이 PC 에서 `~/Applications/emu.app` 을 빌드한다(Xcode 명령줄 도구의 `swiftc` — 다운로드·서명
+서비스 없음). 허브를 감싸는 얇은 창이다.
+
+- 허브 전용 창(어디서든 ⌥⌘E). "Open in a new window" 는 세션 대시보드 하나만 담은 창 — 다른 모니터에 띄워 둘 때.
+- 메뉴바에 세션 수(실패한 세션이 있으면 `!`): 세션 고르기, 최근 프로젝트 시작, 모든 세션 종료.
+- 앱이 뒤에 있을 때 알림: 앱 실행 실패·중단, 세션 기동 완료. 누르면 그 세션.
+- 허브가 없으면 띄우고, 종료할 때는 앱이 띄운 허브만 끈다 — 세션은 끄지 않는다. 밖으로 나가는 링크(DevTools)는
+  기본 브라우저로.
+
+`emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
+`emu update` 가 앱 소스가 바뀌었으면 다시 빌드한다.
+
 ## 대시보드 페이지
 
 프로젝트가 자기 도구 — 로컬 템플릿 전환, 검증, 배포 — 를 대시보드에 붙일 수 있다. emu 는 그 도구가
