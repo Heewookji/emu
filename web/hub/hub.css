@@ -24,12 +24,14 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* ---- drawer ---- */
 .drawer { flex: none; width: 260px; display: flex; flex-direction: column; min-height: 0; background: var(--bg-alt); border-right: 1px solid var(--border); }
-.drawer { transition: width .12s; }
-/* Closed: a rail as wide as the ☰ button, which stays where it was. */
-.hub.closed .drawer { width: 44px; }
-.hub.closed .drawer > :not(.dtop), .hub.closed .brand { display: none; }
+/* Closed: no drawer at all. ☰ floats where it was, over the dashboard's top
+   bar, which the hub asks to make room (see setDrawer in hub.js). */
+.hub.closed .drawer { display: none; }
+#drawer-toggle { position: fixed; left: 8px; top: 8px; z-index: 12; }
+.hub.inset #drawer-toggle { background: var(--bg-alt); }
+.hub.inset #drawer-toggle:hover { background: var(--bg-hover); }
 .drawer-back { display: none; }
-.dtop { display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px; }
+.dtop { display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px 44px; min-height: 44px; }
 .brand { font-weight: 700; font-size: 15px; letter-spacing: .5px; display: flex; align-items: center; gap: 7px; }
 .brand-icon { width: 20px; height: 20px; border-radius: 5px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--error); }
@@ -114,9 +116,7 @@ button.dhead:hover { color: var(--fg); }
 
 /* ---- narrow: closed is the rail; open covers the page ---- */
 @media (max-width: 900px) {
-  .hub:not(.narrow-open) .drawer { width: 44px; }
-  .hub:not(.narrow-open) .drawer > :not(.dtop), .hub:not(.narrow-open) .brand { display: none; }
-  .hub.narrow-open::before { content: ''; flex: none; width: 44px; }
+  .hub:not(.narrow-open) .drawer { display: none; }
   .hub.narrow-open .drawer { position: fixed; left: 0; top: 0; bottom: 0; z-index: 10; box-shadow: 4px 0 24px #0008; }
   .hub.narrow-open .drawer-back { display: block; position: fixed; inset: 0; z-index: 9; background: #0006; }
 }

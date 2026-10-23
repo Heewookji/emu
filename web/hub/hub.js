@@ -83,6 +83,17 @@ function setDrawer(open) {
   const t = $('drawer-toggle');
   t.title = `${open ? 'Hide' : 'Show'} the drawer (⌘\\)`;
   t.setAttribute('aria-expanded', String(open));
+  hub.classList.toggle('inset', toggleOverFrames());
+  for (const f of frames.values()) sendInset(f.el);
+}
+
+// Unless the drawer is open beside the frames, ☰ floats over their top-left
+// corner: ask each dashboard to leave that much room in its top bar.
+const toggleOverFrames = () => NARROW.matches || $('hub').classList.contains('closed');
+function sendInset(el) {
+  try {
+    el.contentWindow?.postMessage({ type: 'emu-hub-inset', left: toggleOverFrames() ? 40 : 0 }, new URL(el.src).origin);
+  } catch (_) { /* not loaded yet: sent again on load */ }
 }
 const drawerOpen = () => (NARROW.matches ? $('hub').classList.contains('narrow-open') : !$('hub').classList.contains('closed'));
 
@@ -192,6 +203,7 @@ function showCurrent() {
     el.src = `${s.dashboard}/`;
     el.title = `${s.name} dashboard`;
     el.setAttribute('allow', 'clipboard-read; clipboard-write');
+    el.addEventListener('load', () => sendInset(el));
     $('main').appendChild(el);
     f = { el, port: s.port, used: 0 };
     frames.set(id, f);
