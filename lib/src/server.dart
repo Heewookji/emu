@@ -21,6 +21,7 @@ import 'engine.dart';
 import 'error_parser.dart';
 import 'eval.dart';
 import 'frame.dart';
+import 'hub.dart' show hubFrameAncestors;
 import 'input.dart';
 import 'locate.dart';
 import 'log_store.dart';
@@ -1407,21 +1408,25 @@ class EmuServer {
 
   Response _static(String path) {
     var rel = path == '/' ? 'index.html' : path.substring(1);
-    final bytes = _readWebAsset(rel);
+    final bytes = readWebAsset(rel);
     if (bytes == null) return Response.notFound('not found: $rel');
+    if (rel.startsWith('hub/')) return Response.notFound('not found: $rel'); // the hub's own page
     if (rel == 'index.html') {
+      // Framed only by a running `emu hub` (its origin can't read the page —
+      // the token stays in here), else by nothing.
+      final ancestors = hubFrameAncestors();
       return Response.ok(injectSessionToken(utf8.decode(bytes), token), headers: {
-        'Content-Type': _contentType(rel),
+        'Content-Type': contentTypeFor(rel),
         // The page carries this session's token: never from cache (a restarted
         // server has a new one), never inside another site's frame.
         'Cache-Control': 'no-store',
-        'Content-Security-Policy': "frame-ancestors 'none'",
-        'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': 'frame-ancestors $ancestors',
+        if (ancestors == "'none'") 'X-Frame-Options': 'DENY',
         // Sub-resource URLs carry ?token=; no link out of the page may leak them.
         'Referrer-Policy': 'no-referrer',
       });
     }
-    return Response.ok(bytes, headers: {'Content-Type': _contentType(rel)});
+    return Response.ok(bytes, headers: {'Content-Type': contentTypeFor(rel)});
   }
 
   Response _json(Object data, {int status = 200}) =>
@@ -1463,7 +1468,7 @@ class EmuServer {
 
 /// Read a dashboard asset: dev disk first (EMU_WEB_DIR or the tool's web/),
 /// then the embedded base64 map.
-List<int>? _readWebAsset(String rel) {
+List<int>? readWebAsset(String rel) {
   final devDir = Platform.environment['EMU_WEB_DIR'];
   if (devDir != null) {
     final f = File('$devDir/$rel');
@@ -1493,7 +1498,7 @@ String? _toolWebDir() {
   return null;
 }
 
-String _contentType(String path) {
+String contentTypeFor(String path) {
   if (path.endsWith('.html')) return 'text/html; charset=utf-8';
   if (path.endsWith('.js')) return 'application/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';
