@@ -969,6 +969,22 @@ emu mock                     # scenarios, the active one, how the app is routed
 emu mock use empty-list      # matching requests get that scenario's answers
 emu mock off                 # everything to the real server
 emu mock log [-n 20]         # the requests the app made through emu, mocked or not
+emu mock log --bodies        # … with request and response bodies
+```
+
+**From the CLI, case by case** — `emu mock set` answers one request right away, before any
+scenario (and with scenarios off), without writing a file. The same method + path replaces
+the previous answer; `--save <scenario>` also writes it to a scenario file to replay later.
+The app has to request again to show a change — trigger a refresh, or `emu restart`.
+
+```bash
+emu mock set GET '/v1/items*' --body '{"items":[]}'
+emu tap --text Refresh && emu find --text 'No items' || exit 1
+emu mock set GET '/v1/items*' --status 500 --delay 1500 --header 'x-trace: case-2'
+emu tap --text Refresh && emu find --text 'Try again' || exit 1
+emu mock set POST /v1/orders --body-file cases/order_fail.json --save regression
+emu mock unset GET '/v1/items*'   # one; `emu mock reset` clears them all
+emu mock log --json --bodies     # what the app actually sent, to assert on
 ```
 
 **Dashboard → Debug → Mocks** shows the scenarios, an editor for each rule (match, status,

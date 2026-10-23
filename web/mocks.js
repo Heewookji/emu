@@ -26,6 +26,7 @@ const mockState = {
   hit: null,        // the selected request, with bodies
 };
 const METHODS = ['', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'];
+const CLI = 'CLI overrides';
 
 async function loadMocks() {
   let j;
@@ -39,6 +40,11 @@ async function loadMocks() {
     if (debugTab === 'mocks') showTab('logs');
     return;
   }
+  // `emu mock set` overrides show as a read-only scenario on top.
+  const scenarios = {};
+  if ((j.overrides || []).length) scenarios[CLI] = j.overrides;
+  j.scenarios = { ...scenarios, ...j.scenarios };
+  j.sources = { ...j.sources, [CLI]: 'cli' };
   mockState.config = j;
   // Keep unsaved edits of scenarios that still exist; drop the rest.
   for (const name of Object.keys(mockState.drafts)) if (!(name in j.scenarios)) delete mockState.drafts[name];
@@ -49,14 +55,14 @@ async function loadMocks() {
   loadMockHits();
 }
 
-const mockEditable = (name) => (mockState.config.sources[name] || 'emu.yaml') !== 'emu.yaml';
+const mockEditable = (name) => (mockState.config.sources[name] || '').endsWith('.json');
 const mockRules = (name) => mockState.drafts[name] || mockState.config.scenarios[name] || [];
 const mockDirty = (name) => !!mockState.drafts[name];
 
 function renderMockTools() {
   const c = mockState.config;
   mockEls.active.innerHTML = '<option value="">off — real server</option>' +
-    Object.keys(c.scenarios).map(n => `<option value="${escapeHtml(n)}"${n === c.active ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    Object.keys(c.scenarios).filter(n => n !== CLI).map(n => `<option value="${escapeHtml(n)}"${n === c.active ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
   mockEls.badge.textContent = c.active ? '●' : '';
   const where = [
     c.hosts.length ? `hook: ${c.hosts.join(', ')}` : '',
@@ -79,18 +85,30 @@ function renderMockList() {
   mockEls.list.innerHTML = names.length ? names.map(name => {
     const editable = mockEditable(name);
     const rules = mockRules(name);
-    return `<div class="mscen${name === c.active ? ' on' : ''}" data-scenario="${escapeHtml(name)}">` +
+    const cli = name === CLI;
+    return `<div class="mscen${name === c.active || cli ? ' on' : ''}" data-scenario="${escapeHtml(name)}">` +
       `<span class="name">${escapeHtml(name)}${mockDirty(name) ? ' •' : ''}</span>` +
-      `<span class="src" title="${escapeHtml(c.sources[name] || 'emu.yaml')}">${editable ? 'file' : 'yaml'}</span></div>` +
+      (cli ? `<span class="mx" id="mock-reset" title="emu mock reset">clear</span>` : '') +
+      `<span class="src" title="${escapeHtml(c.sources[name] || 'emu.yaml')}">${cli ? 'cli' : editable ? 'file' : 'yaml'}</span></div>` +
       rules.map((rule, i) => {
         const sel = mockState.sel && mockState.sel.scenario === name && mockState.sel.index === i;
-        return `<div class="mrule${sel ? ' active' : ''}" data-scenario="${escapeHtml(name)}" data-index="${i}">${ruleLabel(rule)}</div>`;
+        return `<div class="mrule${sel ? ' active' : ''}" data-scenario="${escapeHtml(name)}" data-index="${i}">${ruleLabel(rule)}` +
+          (cli ? `<span class="mx" data-unset="${i}" title="emu mock unset">×</span>` : '') + `</div>`;
       }).join('') +
       (editable ? `<div class="madd" data-scenario="${escapeHtml(name)}">+ rule</div>` : '');
   }).join('') : `<div class="diff-note">no scenarios — name one above and press “+ scenario”, or use “mock this” on a request</div>`;
   mockEls.list.querySelectorAll('.mrule').forEach(el => {
     el.onclick = () => selectRule(el.dataset.scenario, Number(el.dataset.index));
   });
+  mockEls.list.querySelectorAll('[data-unset]').forEach(el => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const m = (c.scenarios[CLI][Number(el.dataset.unset)] || {}).match || {};
+      unsetOverride(`${m.method || '*'} ${m.url || m.path}`);
+    };
+  });
+  const reset = document.getElementById('mock-reset');
+  if (reset) reset.onclick = () => unsetOverride(null);
   mockEls.list.querySelectorAll('.madd').forEach(el => {
     el.onclick = () => addRule(el.dataset.scenario, { match: { method: 'GET', path: '/' }, respond: { status: 200, body: {} } });
   });
@@ -138,7 +156,9 @@ function renderMockEditor() {
       ? `<button id="mr-dup">duplicate</button><button id="mr-del">delete rule</button>` +
         `<button id="mr-save" class="primary"${mockDirty(sel.scenario) ? '' : ' disabled'}>save ${escapeHtml(sel.scenario)}</button>`
       : '') + '</div>' +
-    (editable ? '' : `<div class="diff-note">defined in emu.yaml — edit it there, or copy it to a file: type a name above and press “copy”.</div>`) +
+    (editable ? '' : `<div class="diff-note">${sel.scenario === CLI
+      ? 'set with <code>emu mock set</code> — checked before any scenario, kept in memory until <code>emu mock reset</code>. To keep it, type a name above and press “copy”.'
+      : 'defined in emu.yaml — edit it there, or copy it to a file: type a name above and press “copy”.'}</div>`) +
     `<div class="form-grid mform">` +
     `<label>method</label><select id="mr-method"${dis}>${METHODS.map(x => `<option value="${x}"${(m.method || '') === x ? ' selected' : ''}>${x || 'any'}</option>`).join('')}</select>` +
     `<label><select id="mr-kind"${dis}><option value="path"${kind === 'path' ? ' selected' : ''}>path</option><option value="url"${kind === 'url' ? ' selected' : ''}>url</option></select></label>` +
@@ -205,6 +225,14 @@ function renderMockEditor() {
     saveScenario(sel.scenario);
   };
   document.getElementById('mr-dup').onclick = () => addRule(sel.scenario, JSON.parse(JSON.stringify(mockRules(sel.scenario)[sel.index])));
+}
+
+async function unsetOverride(key) {
+  const q = key ? `?${new URLSearchParams({ key })}` : '';
+  const j = await (await api(`/api/mock/overrides${q}`, { method: 'DELETE' })).json();
+  if (!j.ok) toast(j.error);
+  if (mockState.sel && mockState.sel.scenario === CLI) mockState.sel = null;
+  loadMocks();
 }
 
 async function saveScenario(name, rules = mockRules(name)) {

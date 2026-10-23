@@ -396,3 +396,5 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .mh-actions { margin-top: 6px; }
 .mh-sec { padding: 6px 12px 2px; color: var(--muted); font-size: 11px; }
 .mhit-detail pre { margin: 0; padding: 4px 12px 10px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.mx { color: var(--muted); font-weight: 400; cursor: pointer; padding: 0 4px; float: right; }
+.mx:hover { color: var(--error); }

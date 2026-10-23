@@ -67,6 +67,10 @@ class MockRule {
   final String? file;
   final Duration delay;
 
+  /// What a rule answers: two rules with the same key replace each other
+  /// (`emu mock set`, "mock this").
+  String get key => '${method?.toUpperCase() ?? '*'} ${url ?? path}';
+
   bool matches(String method, Uri uri) {
     if (this.method != null && this.method!.toUpperCase() != method.toUpperCase()) return false;
     final path = this.path;
@@ -317,6 +321,22 @@ bool deleteScenario(MockConfig config, String projectRoot, String name) {
   return true;
 }
 
+/// One rule from its JSON (`{match, respond}`), or null with [problems] said.
+MockRule? parseMockRule(Object? raw, List<String> problems, {String at = 'rule'}) => _parseRule(raw, at, problems);
+
+/// [rules] with [rule] in place of any rule of the same [MockRule.key],
+/// or added at the end.
+List<Map<String, dynamic>> upsertRule(List<MockRule> rules, MockRule rule) {
+  final out = [for (final r in rules) r.toJson()];
+  final i = rules.indexWhere((r) => r.key == rule.key);
+  if (i >= 0) {
+    out[i] = rule.toJson();
+  } else {
+    out.add(rule.toJson());
+  }
+  return out;
+}
+
 MockRule? _parseRule(Object? raw, String at, List<String> problems) {
   if (raw is! Map || raw['match'] is! Map || raw['respond'] is! Map) {
     problems.add('$at: expected { match: {method?, path | url}, respond: {status?, body | file, headers?, delay?} }');
@@ -419,6 +439,30 @@ class MockServer {
   /// The active scenario, or null: everything goes to the real server.
   String? active;
 
+  /// `emu mock set` rules: in memory only, checked before the active
+  /// scenario (so they work with it off), gone with the session.
+  final List<MockRule> overrides = [];
+
+  /// What [MockHit.scenario] says for a request an override answered.
+  static const overrideLabel = 'cli';
+
+  /// Add [rule], replacing an override with the same key.
+  void setOverride(MockRule rule) {
+    final i = overrides.indexWhere((r) => r.key == rule.key);
+    if (i >= 0) {
+      overrides[i] = rule;
+    } else {
+      overrides.add(rule);
+    }
+  }
+
+  /// Remove the override for [key] (`GET /v1/items`, `* /v1/x`); false when none.
+  bool unsetOverride(String key) {
+    final before = overrides.length;
+    overrides.removeWhere((r) => r.key == key);
+    return overrides.length < before;
+  }
+
   /// The last [_keep] requests, newest last.
   final List<MockHit> recent = [];
   static const _keep = 200;
@@ -512,6 +556,9 @@ class MockServer {
   }
 
   (String, MockRule)? _ruleFor(MockConfig config, String method, Uri uri) {
+    for (final rule in overrides) {
+      if (rule.matches(method, uri)) return (overrideLabel, rule);
+    }
     final name = active;
     if (name == null) return null;
     for (final rule in config.scenarios[name] ?? const <MockRule>[]) {

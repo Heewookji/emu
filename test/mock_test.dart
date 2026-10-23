@@ -189,6 +189,34 @@ mocks:
       expect([for (final h in hits) h.scenario], ['empty', 'empty', null]);
     });
 
+    test('CLI overrides: checked before the scenario, even with it off; replace by key; unset/reset', () async {
+      MockRule rule(Map<String, dynamic> json) => parseMockRule(json, [])!;
+      server.setOverride(rule({'match': {'method': 'get', 'path': '/v1/items*'}, 'respond': {'status': 418, 'body': 'tea'}}));
+      var (code, body, _) = await send('GET', '/v1/items');
+      expect((code, body, hits.last.scenario), (418, 'tea', 'cli'));
+      server.active = 'empty'; // its /v1/items* rule loses to the override
+      expect((await send('GET', '/v1/items')).$1, 418);
+      server.setOverride(rule({'match': {'method': 'GET', 'path': '/v1/items*'}, 'respond': {'status': 204}}));
+      expect(server.overrides, hasLength(1)); // same key: replaced
+      expect(server.overrides.single.key, 'GET /v1/items*');
+      expect((await send('GET', '/v1/items')).$1, 204);
+      expect(server.unsetOverride('GET /v1/nope'), isFalse);
+      expect(server.unsetOverride('GET /v1/items*'), isTrue);
+      (code, body, _) = await send('GET', '/v1/items');
+      expect((code, body), (200, '{"items":[]}')); // back to the scenario
+      final problems = <String>[];
+      expect(parseMockRule({'match': {}, 'respond': {}}, problems), isNull);
+      expect(problems.single, startsWith('rule.match'));
+    });
+
+    test('upsertRule replaces the same key or appends', () {
+      final a = parseMockRule({'match': {'path': '/a'}, 'respond': {'status': 200}}, [])!;
+      final a2 = parseMockRule({'match': {'path': '/a'}, 'respond': {'status': 500}}, [])!;
+      final b = parseMockRule({'match': {'method': 'POST', 'path': '/a'}, 'respond': {}}, [])!;
+      expect([for (final r in upsertRule([a, b], a2)) r['respond']['status']], [500, 200]);
+      expect(upsertRule([a], b), hasLength(2));
+    });
+
     test('a mocked HEAD gets the length, not the body', () async {
       server.active = 'empty';
       final (code, body, headers) = await send('HEAD', '/v1/me');

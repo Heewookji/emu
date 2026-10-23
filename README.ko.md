@@ -893,6 +893,22 @@ emu mock                     # 시나리오, 활성 시나리오, 앱 연결 방
 emu mock use empty-list      # 맞는 요청은 그 시나리오가 응답
 emu mock off                 # 모두 실서버로
 emu mock log [-n 20]         # 앱이 emu 를 거쳐 보낸 요청(목업 여부 포함)
+emu mock log --bodies        # … 요청·응답 본문까지
+```
+
+**CLI 로 케이스별 검증** — `emu mock set` 은 요청 하나의 응답을 즉시 지정한다. 파일을 쓰지 않고, 어떤
+시나리오보다 먼저(시나리오가 off 여도) 적용된다. 같은 method + path 면 덮어쓰고, `--save <scenario>` 를 주면
+시나리오 파일에도 저장해 나중에 다시 쓸 수 있다. 바뀐 응답이 화면에 보이려면 앱이 다시 요청해야 한다
+(새로고침 동작, 또는 `emu restart`).
+
+```bash
+emu mock set GET '/v1/items*' --body '{"items":[]}'
+emu tap --text 새로고침 && emu find --text '항목이 없습니다' || exit 1
+emu mock set GET '/v1/items*' --status 500 --delay 1500 --header 'x-trace: case-2'
+emu tap --text 새로고침 && emu find --text '다시 시도' || exit 1
+emu mock set POST /v1/orders --body-file cases/order_fail.json --save regression
+emu mock unset GET '/v1/items*'   # 하나 제거, `emu mock reset` 은 전부
+emu mock log --json --bodies     # 앱이 실제로 보낸 요청으로 검증
 ```
 
 **대시보드 → Debug → Mocks** 에서 시나리오 목록, 규칙 편집기(match·status·delay·headers·body), 실시간

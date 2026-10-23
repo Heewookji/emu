@@ -565,6 +565,8 @@ class EmuServer {
   /// - `GET  /api/mock/hits/<id>`            one request, with bodies
   /// - `PUT  /api/mock/scenarios/<name> {rules}`   write `<dir>/<name>.json`
   /// - `DELETE /api/mock/scenarios/<name>`  remove it
+  /// - `POST /api/mock/overrides {rule, save?}`    `emu mock set` (in memory; save also writes a scenario)
+  /// - `DELETE /api/mock/overrides[?key=GET /v1/x]` `emu mock unset` / `reset`
   Future<Response> _mockApi(Request req, String path) async {
     final server = mock;
     if (server == null) {
@@ -573,8 +575,12 @@ class EmuServer {
     }
     if (path == '/api/mock/log') {
       final n = int.tryParse(req.url.queryParameters['n'] ?? '') ?? 50;
+      final bodies = req.url.queryParameters['bodies'] == '1';
       final hits = server.recent;
-      return _json({'ok': true, 'hits': [for (final h in hits.skip(hits.length > n ? hits.length - n : 0)) h.toJson()]});
+      return _json({
+        'ok': true,
+        'hits': [for (final h in hits.skip(hits.length > n ? hits.length - n : 0)) h.toJson(bodies: bodies)],
+      });
     }
     if (path.startsWith('/api/mock/hits/')) {
       final hit = server.hit(int.tryParse(path.substring('/api/mock/hits/'.length)) ?? -1);
@@ -582,6 +588,46 @@ class EmuServer {
       return _json({'ok': true, 'hit': hit.toJson(bodies: true)});
     }
     var config = server.load();
+    Map<String, dynamic> state() =>
+        {'ok': true, 'active': server.active, 'port': server.port, ...config.toJson(), 'overrides': [
+          for (final r in server.overrides) r.toJson(),
+        ]};
+    if (path == '/api/mock/overrides') {
+      if (req.method == 'POST') {
+        Object? body;
+        try {
+          body = jsonDecode(await req.readAsString());
+        } catch (_) {}
+        final problems = <String>[];
+        final rule = parseMockRule(body is Map ? body['rule'] : null, problems);
+        if (rule == null) return _json({'ok': false, 'error': problems.join('\n')}, status: 400);
+        final save = body is Map ? body['save'] : null;
+        if (save != null) {
+          final name = '$save';
+          final existing = config.sources[name] == null ? const <MockRule>[] : config.scenarios[name]!;
+          final problems = writeScenario(config, session.projectRoot.path, name, upsertRule(existing, rule));
+          if (problems.isNotEmpty) return _json({'ok': false, 'error': problems.join('\n')}, status: 400);
+          config = server.load();
+        }
+        server.setOverride(rule);
+        logStore.system('mock: ${rule.key} → ${rule.status} (emu mock set${save != null ? ', saved to "$save"' : ''})');
+      } else if (req.method == 'DELETE') {
+        final key = req.url.queryParameters['key'];
+        if (key == null) {
+          server.overrides.clear();
+          logStore.system('mock: overrides cleared');
+        } else if (!server.unsetOverride(key)) {
+          return _json({
+            'ok': false,
+            'error': 'no override "$key" (${server.overrides.map((r) => r.key).join(', ')})',
+          }, status: 404);
+        }
+      } else {
+        return _json({'ok': false, 'error': 'use POST or DELETE'}, status: 405);
+      }
+      _broadcast({'type': 'mock', 'active': server.active});
+      return _json(state());
+    }
     if (path.startsWith('/api/mock/scenarios/')) {
       final name = Uri.decodeComponent(path.substring('/api/mock/scenarios/'.length));
       if (req.method == 'PUT') {
@@ -604,7 +650,7 @@ class EmuServer {
       }
       config = server.load();
       _broadcast({'type': 'mock', 'active': server.active});
-      return _json({'ok': true, 'active': server.active, 'port': server.port, ...config.toJson()});
+      return _json(state());
     }
     if (req.method == 'POST') {
       Object? body;
@@ -622,7 +668,7 @@ class EmuServer {
       logStore.system(name == null ? 'mock: off — every request goes to the real server' : 'mock: using "$name"');
       _broadcast({'type': 'mock', 'active': name});
     }
-    return _json({'ok': true, 'active': server.active, 'port': server.port, ...config.toJson()});
+    return _json(state());
   }
 
   Future<HttpServer> _bind(int requestedPort) async {

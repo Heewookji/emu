@@ -13,6 +13,9 @@
   (`upstream` + `define`, 앱 변경 없음). `emu up` 이 목 서버·dart-define·`adb reverse` 를 준비한다.
   `emu mock [use <scenario>|off|log]`, 서버 API `GET/POST /api/mock`, `GET /api/mock/log`,
   `GET /api/mock/hits/<id>`, `PUT/DELETE /api/mock/scenarios/<name>`.
+- `emu mock set <METHOD|*> <path|url> [--status] [--body|--body-file] [--header] [--delay] [--save <scenario>]`,
+  `emu mock unset`, `emu mock reset` — 요청 하나의 응답을 CLI 로 즉시 지정(시나리오보다 우선, 메모리에만).
+  케이스별 자동 검증용. `emu mock log --bodies` 로 요청·응답 본문까지. 서버 API `POST/DELETE /api/mock/overrides`.
 - 대시보드 **Mocks** 탭(Debug) — 시나리오 전환, 규칙 편집(match·status·delay·headers·body, `mocks/<name>.json`
   에 저장, emu.yaml 시나리오는 읽기 전용), 실시간 트래픽과 요청·응답 본문, 실제 응답을 규칙으로 만드는
   "mock this response".
