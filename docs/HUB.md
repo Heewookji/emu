@@ -184,4 +184,5 @@ lib/src/app_install.dart                   emu app install|uninstall|open
 2. **허브 서버(4576 우선, 빈 포트 fallback) + 서랍 UI + iframe** — `lib/src/hub.dart`(shelf, 가드 재사용), `web/hub/index.html`·`hub.js`·`hub.css`
    (대시보드와 같은 색 토큰), 세션 쪽 `frame-ancestors` 변경, 하단 버전 표시.
 3. **허브 동작** — ⋮ 메뉴(종료·restart·경로), 기기 섹션, 최근 프로젝트 [시작] — 2번 PR 에 같이 들어갔다.
-4. **macOS 앱** — 3단계.
+4. **macOS 앱** — 3단계. `macos/Emu/*.swift`(바이너리에 `macos_sources.g.dart` 로 포함), `lib/src/app_install.dart`,
+   CI 의 macOS job 이 컴파일·`--self-test`.
