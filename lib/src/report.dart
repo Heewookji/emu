@@ -44,6 +44,8 @@ const _urlLimit = 8000;
 
 const _titleLimit = 120;
 
+const _leftOut = '(left out: the report was too long)';
+
 /// Marks issues sent by `emu report` (`emu report --mine` finds them by it).
 const reportMarker = '<!-- emu-report v1';
 
@@ -390,29 +392,34 @@ BuiltReport buildReport(ReportDraft draft, Map<String, String> environment, Scru
   for (final t in texts) {
     sections.add(_fold(t.name, t.text));
   }
-  // Over the limit: drop the oldest lines of the longest attachment first.
-  while (sections.join().length > room && sections.isNotEmpty) {
-    final i = [
-      for (var k = 0; k < texts.length; k++) k,
-    ].reduce((a, b) => texts[a].text.length >= texts[b].text.length ? a : b);
-    final lines = texts[i].text.split('\n');
-    final over = sections.join().length - room;
-    if (lines.length <= 1 || texts[i].text.length <= over) {
-      texts[i] = (name: texts[i].name, text: '(left out: the report was too long)');
-      sections[i] = _fold(texts[i].name, texts[i].text);
-      notes.add('${texts[i].name}: left out to fit GitHub\'s size limit');
-      if (texts.every((t) => t.text.startsWith('(left out'))) break;
-      continue;
+  // Over the limit: cut the oldest part of the longest attachment, then the
+  // next, until it fits. Every pass shrinks the body, so this always ends.
+  final cutNotes = <String, String>{};
+  while (sections.join().length > room) {
+    final open = [
+      for (var k = 0; k < texts.length; k++)
+        if (!texts[k].text.startsWith(_leftOut)) k,
+    ];
+    if (open.isEmpty) break;
+    final i = open.reduce((a, b) => texts[a].text.length >= texts[b].text.length ? a : b);
+    final t = texts[i].text;
+    final keep = t.length - (sections.join().length - room) - 100;
+    if (keep < 500) {
+      texts[i] = (name: texts[i].name, text: _leftOut);
+      cutNotes[texts[i].name] = "${texts[i].name}: left out to fit GitHub's size limit";
+    } else {
+      var tail = t.substring(t.length - keep);
+      final nl = tail.indexOf('\n');
+      if (nl >= 0 && nl < tail.length - 1) tail = tail.substring(nl + 1); // start on a whole line
+      final cut = t.substring(0, t.length - tail.length);
+      final lines = '\n'.allMatches(cut).length;
+      final what = lines > 0 ? '$lines earlier lines' : '${cut.length} earlier characters';
+      texts[i] = (name: texts[i].name, text: '… $what left out\n$tail');
+      cutNotes[texts[i].name] = "${texts[i].name}: $what left out to fit GitHub's size limit";
     }
-    var cut = 0, drop = 0;
-    while (cut < over + 40 && drop < lines.length - 1) {
-      cut += lines[drop].length + 1;
-      drop++;
-    }
-    texts[i] = (name: texts[i].name, text: '… $drop earlier lines left out\n${lines.sublist(drop).join('\n')}');
     sections[i] = _fold(texts[i].name, texts[i].text);
-    notes.add('${texts[i].name}: $drop earlier lines left out to fit GitHub\'s size limit');
   }
+  notes.addAll(cutNotes.values);
   if (images.isNotEmpty) {
     notes.add(
       '${images.length == 1 ? 'the screenshot is' : '${images.length} screenshots are'} not in the body — '
@@ -465,7 +472,7 @@ String _tail(ReportKind kind, Map<String, String> env, Scrubber scrub) {
   final meta = jsonEncode({
     'kind': kind.name,
     'emu': kEmuVersion,
-  }).replaceAll('<', r'<').replaceAll('>', r'>').replaceAll('&', r'&');
+  }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
   sb.writeln('$reportMarker $meta -->');
   return sb.toString();
 }
@@ -599,6 +606,9 @@ class GitHubReporter {
       short =
           '${short.substring(0, (short.length * _urlLimit / build(short).length * 0.9).floor())}\n\n'
           '_(cut to fit a link — paste the full text from the clipboard)_';
+    }
+    if (build(short).length > _urlLimit) {
+      short = '_(the text was too long for a link — paste it from the clipboard)_\n\n$reportMarker {} -->';
     }
     return (url: build(short), trimmed: true);
   }

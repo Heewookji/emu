@@ -156,6 +156,27 @@ void main() {
       expect(r.notes.single, contains('earlier lines left out'));
     });
 
+    test('one huge line can not stall the trimming', () {
+      final r = buildReport(
+        ReportDraft(
+          kind: ReportKind.bug,
+          title: 't',
+          body: 'b' * 29000,
+          attachments: [ReportAttachment.text('blob', '\n${'x' * 90000}'), ReportAttachment.text('logs', 'y' * 40000)],
+        ),
+        _env,
+        Scrubber(),
+      );
+      expect(r.body.length, lessThan(65536));
+      expect(r.body, contains(reportMarker));
+    });
+
+    test('the marker JSON is escaped for the HTML comment', () {
+      final r = buildReport(ReportDraft(kind: ReportKind.bug, title: 't'), _env, Scrubber());
+      final meta = RegExp(r'<!-- emu-report v1 (.*) -->').firstMatch(r.body)!.group(1)!;
+      expect(jsonDecode(meta), containsPair('kind', 'bug'));
+    });
+
     test('images are listed, never in the body', () {
       final r = buildReport(
         ReportDraft(
