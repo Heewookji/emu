@@ -10,6 +10,10 @@
 - 대시보드 페이지 블록 `panel` — 입력 칸 없는 form(버튼 패널). 툴바에 두기 싫은 버튼(배포 등)을 영역 안에 묶는다.
   `form` 도 `fields` 를 빼거나 `[]` 로 둘 수 있고, 그때 버튼의 `{{input.*}}` 는 설정 오류. form·panel 의 `note:` 는
   제목 아래 설명 한 줄. `emu pages` 는 입력 칸 없는 form 을 `panel` 로, note 를 함께 보여 준다 (#48).
+- 대시보드 pages 의 `confirm:` 이 문자열·맵을 받는다(#46) — `title`·`message`(자리표시자, 텍스트로만)·`danger`
+  (Run 강조, 포커스는 Cancel)·`button`·`preview`(확인 창 전에 돌리는 명령: diff·표·텍스트로 보이고, 실패하면
+  Run 을 막음, `allowOnPreviewError` 로 해제). 실행할 명령은 늘 접힌 채 보인다. 서버 428 응답에 `confirm`·
+  `preview` 가 붙고, `emu run` 은 터미널에서 같은 내용을 찍고 y/N 을 묻는다(`--yes` 는 그대로 건너뜀).
 
 ## [0.14.0] - 2026-10-23
 

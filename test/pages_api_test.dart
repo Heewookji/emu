@@ -25,6 +25,20 @@ pages:
       - action: { id: fail, run: [./tool/t.sh, fail] }
       - action: { id: reload, run: [./tool/t.sh, hello], then: reload }
       - action: { id: publish, run: [./tool/t.sh, hello, published], confirm: true }
+      - action:
+          id: deploy
+          label: stage 배포
+          run: [./tool/t.sh, hello, deployed]
+          confirm:
+            title: push to stage?
+            message: pushes to the stage branch
+            danger: true
+            button: push
+            preview: [./tool/t.sh, patch]
+      - action: { id: rows, run: [./tool/t.sh, hello], confirm: { preview: [./tool/t.sh, rows] } }
+      - action: { id: text, run: [./tool/t.sh, hello], confirm: { message: "plain words", preview: [./tool/t.sh, hello, preview] } }
+      - action: { id: badpreview, run: [./tool/t.sh, hello], confirm: { preview: [./tool/t.sh, fail] } }
+      - action: { id: softpreview, run: [./tool/t.sh, hello], confirm: { preview: [./tool/t.sh, fail], allowOnPreviewError: true } }
       - action: { id: slow, run: [sleep, 5], timeout: 1 }
       - action: { id: missing, run: [./tool/nope.sh] }
     blocks:
@@ -37,6 +51,8 @@ case "$1" in
   set) printf %s "$2" > .state ;;
   hello) echo "hello $2"; echo "warn" >&2 ;;
   fail) echo "line 1"; echo "line 2"; exit 3 ;;
+  patch) printf -- '--- a/t.json\n+++ b/t.json\n@@ -1 +1 @@\n-old\n+new\n' ;;
+  rows) echo '[{"name": "home", "changes": 2}, {"name": "<b>x</b>", "changes": 0}]' ;;
 esac
 ''';
 
@@ -90,7 +106,7 @@ void main() {
     final page = (j['pages'] as List).single as Map;
     expect(page['id'], 'tools');
     expect([for (final i in page['toolbar'] as List) i['id']],
-        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'slow', 'missing']);
+        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing']);
     expect((page['toolbar'] as List)[1]['command'], "./tool/t.sh hello 'two words'");
   });
 
@@ -148,6 +164,51 @@ void main() {
     (code, j) = await run('publish', {'confirmed': true});
     expect(code, 200);
     expect(j['output'], contains('hello published'));
+  });
+
+  test('a confirm map: the dialog words, and a diff preview that runs before it opens', () async {
+    var (code, j) = await run('deploy');
+    expect(code, 428);
+    expect(j['command'], './tool/t.sh hello deployed'); // the real command is always there
+    expect(j['confirm'], {'title': 'push to stage?', 'message': 'pushes to the stage branch', 'danger': true, 'button': 'push'});
+    expect(j['preview'], containsPair('ok', true));
+    expect(j['preview'], containsPair('kind', 'diff'));
+    expect(j['preview'], containsPair('command', './tool/t.sh patch'));
+    expect(j['preview']['patch'], contains('+new'));
+    expect(broadcasts, isEmpty); // the preview isn't a run
+    expect(logs, isEmpty);
+
+    (code, j) = await run('deploy', {'confirmed': true});
+    expect(code, 200);
+    expect(j['output'], contains('hello deployed'));
+  });
+
+  test('a preview prints rows as a table, anything else as text', () async {
+    var (_, j) = await run('rows');
+    expect(j['confirm'], {'title': 'Run “rows”?', 'danger': false, 'button': 'Run'});
+    expect(j['preview']['kind'], 'table');
+    expect(j['preview']['rows'], [
+      {'name': 'home', 'changes': 2},
+      {'name': '<b>x</b>', 'changes': 0},
+    ]);
+
+    (_, j) = await run('text');
+    expect(j['confirm']['message'], 'plain words');
+    expect(j['preview']['kind'], 'text');
+    expect(j['preview']['text'], 'hello preview\n');
+  });
+
+  test('a failed preview blocks Run unless allowOnPreviewError', () async {
+    var (code, j) = await run('badpreview');
+    expect(code, 428);
+    expect(j['preview'], containsPair('ok', false));
+    expect(j['preview'], containsPair('error', 'exit 3'));
+    expect(j['preview'], containsPair('blocks', true));
+    expect(j['preview']['text'], contains('line 2'));
+
+    (_, j) = await run('softpreview');
+    expect(j['preview'], containsPair('ok', false));
+    expect(j['preview'], containsPair('blocks', false));
   });
 
   test('a toggle reads its state, flips, then reports the new state', () async {

@@ -136,8 +136,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu open` — 대시보드를 브라우저로 열기.
 - `emu pages` / `emu run <page>.<item> [on|off] [--select <col>=<value>] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
   선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정(명령이
-  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm: true` 항목은 `--yes` 가
-  있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
+  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm:` 항목은 확인 창 내용
+  (제목·설명·preview·명령)을 찍고 터미널이면 y/N 을 묻는다 — 에이전트처럼 터미널이 아니면 `--yes` 가 있어야
+  실행된다(`--yes` 없이 `--json` 이면 preview 결과만 받아 볼 수 있다). `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
   form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
 - `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의

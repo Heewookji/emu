@@ -2199,7 +2199,7 @@ Future<int> _runCmd(List<String> args) async {
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
     ..addMultiOption('row', abbr: 'r', splitCommas: false, help: "<col>=<value> of a row button's row (repeatable)")
     ..addMultiOption('input', abbr: 'i', splitCommas: false, help: "<field>=<value> for a form's button (repeatable)")
-    ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: true')
+    ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: without asking')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
@@ -2207,8 +2207,9 @@ Future<int> _runCmd(List<String> args) async {
       '                                      [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
       '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), a list\'s row\n'
       '   button or a form\'s button, the same as pressing it in the dashboard. A\n'
-      '   toggle takes on or off; an action marked confirm: true runs only with\n'
-      '   --yes. --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
+      '   toggle takes on or off. An action marked confirm: shows its dialog (title,\n'
+      '   message, preview, command) and asks y/N on a terminal; --yes skips that.\n'
+      '   --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
       '   {{input.<field>}}. A toggle without on|off prints its state. Exit 0 =\n'
       '   the command and its then: reload/restart succeeded; a failed command\n'
       '   exits with its own code. `emu pages` lists the items.';
@@ -2276,19 +2277,45 @@ Future<int> _runCmd(List<String> args) async {
     path = '/api/pages/$page/${kind == 'list' ? 'rows' : 'forms'}/'
         '${Uri.encodeComponent(target[1])}/${Uri.encodeComponent(target[2])}';
   }
-  final r = await _postJson(
-    info,
-    path,
-    jsonEncode({
-      'confirmed': res.flag('yes'),
-      if (onOff != null) 'on': onOff == 'on',
-      if (selected.isNotEmpty) 'selected': selected,
-      if (row.isNotEmpty) 'row': row,
-      if (input.isNotEmpty) 'input': input,
-    }),
-    // The server bounds the command (its timeout:); this only must outlast it.
-    timeout: const Duration(hours: 1),
-  );
+  Future<Map<String, dynamic>?> post({required bool confirmed}) => _postJson(
+        info,
+        path,
+        jsonEncode({
+          'confirmed': confirmed,
+          if (onOff != null) 'on': onOff == 'on',
+          if (selected.isNotEmpty) 'selected': selected,
+          if (row.isNotEmpty) 'row': row,
+          if (input.isNotEmpty) 'input': input,
+        }),
+        // The server bounds the command (its timeout:); this only must outlast it.
+        timeout: const Duration(hours: 1),
+      );
+  var r = await post(confirmed: res.flag('yes'));
+  if (r != null && r['needsConfirm'] == true && !res.flag('json')) {
+    // The dashboard's dialog, in the terminal: title, message, preview, command.
+    _printConfirm(r);
+    final preview = r['preview'] as Map?;
+    if (preview?['blocks'] == true) {
+      stderr.writeln('✗ ${rest.first}: the preview failed — not running it');
+      return 1;
+    }
+    // Ask only with someone at both ends; stdin at EOF (/dev/null, which
+    // Dart also calls a terminal) reads as no answer.
+    String? answer;
+    if (stdin.hasTerminal && stdioType(stderr) == StdioType.terminal) {
+      stderr.write('${(r['confirm'] as Map?)?['button'] ?? 'Run'}? [y/N] ');
+      answer = stdin.readLineSync();
+    }
+    if (answer == null) {
+      stderr.writeln('✗ ${rest.first} asks for confirmation first — pass --yes to run it');
+      return 1;
+    }
+    if (!const {'y', 'yes'}.contains(answer.trim().toLowerCase())) {
+      stderr.writeln('cancelled');
+      return 1;
+    }
+    r = await post(confirmed: true);
+  }
   if (r == null) {
     stderr.writeln('✗ run: no response from the server');
     return 1;
@@ -2301,10 +2328,6 @@ Future<int> _runCmd(List<String> args) async {
   if (res.flag('json')) {
     print(jsonEncode(r));
     return exit;
-  }
-  if (r['needsConfirm'] == true) {
-    stderr.writeln('✗ ${rest.first} asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
-    return 1;
   }
   if (r['exitCode'] == null) {
     // Unknown page/item, already running, bad on/off, a value missing.
@@ -2331,6 +2354,40 @@ Future<int> _runCmd(List<String> args) async {
     stderr.writeln(line);
   }
   return exit;
+}
+
+/// A 428 from `emu run` as the dashboard's confirm dialog, on stderr.
+void _printConfirm(Map<String, dynamic> r) {
+  final confirm = r['confirm'] as Map? ?? const {};
+  stderr.writeln('${confirm['danger'] == true ? '⚠ ' : ''}${confirm['title'] ?? 'Run it?'}');
+  if (confirm['message'] != null) stderr.writeln('  ${'${confirm['message']}'.replaceAll('\n', '\n  ')}');
+  final preview = r['preview'] as Map?;
+  if (preview != null) {
+    stderr.writeln('');
+    if (preview['ok'] != true) {
+      stderr.writeln('preview failed (${preview['error']}): \$ ${preview['command']}');
+    } else {
+      stderr.writeln('preview: \$ ${preview['command']}');
+    }
+    final rows = (preview['rows'] as List?)?.cast<Map>();
+    if (rows != null) {
+      final cols = [for (final k in rows.first.keys) '$k'];
+      String cell(Object? v) => v == null ? '' : v is String ? v : jsonEncode(v);
+      final widths = [for (final c in cols) rows.fold(c.length, (w, row) => cell(row[c]).length > w ? cell(row[c]).length : w)];
+      String line(List<String> cells) => [for (final (i, c) in cells.indexed) c.padRight(widths[i])].join('  ').trimRight();
+      stderr.writeln('  ${line(cols)}');
+      for (final row in rows) {
+        stderr.writeln('  ${line([for (final c in cols) cell(row[c])])}');
+      }
+      if (preview['truncated'] != null) stderr.writeln('  (first ${rows.length} of ${preview['truncated']} rows)');
+    } else {
+      final text = '${preview['patch'] ?? preview['text'] ?? ''}'.trimRight();
+      if (text.isNotEmpty) stderr.writeln(text);
+    }
+  }
+  stderr.writeln('');
+  stderr.writeln('runs in the project root:');
+  stderr.writeln('  \$ ${r['command']}');
 }
 
 // --------------------------------------------------------------------------
@@ -3249,8 +3306,8 @@ COMMANDS
   run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
   run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...
                          Run a page's toolbar item, row button or form button, as
-                         the dashboard does. A toggle takes on/off; confirm: true
-                         actions need --yes; --select/--row/--input fill
+                         the dashboard does. A toggle takes on/off; confirm:
+                         actions ask y/N (or --yes); --select/--row/--input fill
                          {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}
   block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
                          What a page's list (rows) or diff block shows; --select

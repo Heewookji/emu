@@ -122,8 +122,12 @@
   <div class="modal" id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
     <div class="modal-head" id="confirm-title"></div>
     <div class="modal-body">
-      <div class="muted">runs in the project root:</div>
-      <pre id="confirm-cmd"></pre>
+      <div class="confirm-msg" id="confirm-msg" hidden></div>
+      <div class="confirm-preview" id="confirm-preview" hidden></div>
+      <details id="confirm-cmd-box">
+        <summary class="muted">runs in the project root: <code id="confirm-cmd-line"></code></summary>
+        <pre id="confirm-cmd"></pre>
+      </details>
       <div class="muted" id="confirm-then"></div>
     </div>
     <div class="modal-foot">

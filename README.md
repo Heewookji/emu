@@ -847,7 +847,7 @@ pages:
 | `toolbar` | `action` (a button) and `toggle` (a switch) |
 | `run` / `state` / `on` / `off` | A command: `[program, arg, …]` runs directly, a string runs with `sh -c`. A relative program (`./tool/x`) resolves against the project root |
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
-| `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
+| `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
 | `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
 
@@ -871,6 +871,37 @@ pages:
   is neutral.
 - An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`
   item shows the command with the values filled in.
+- `confirm:` can say what the action does, and show what it would change before it runs:
+
+  ```yaml
+  - action:
+      id: stage
+      label: stage deploy
+      run: [./tool/deploy, --env, stage, "{{selected.name}}"]
+      confirm:
+        title: Push to the stage branch?
+        message: "{{selected.name}} goes straight to the stage branch of the deploy repo."
+        danger: true            # red Run button, focus on Cancel: Enter alone doesn't run it
+        button: push            # the Run button's text
+        preview: [./tool/deploy, --env, stage, --dry-run, "{{selected.name}}"]
+  ```
+
+  | Key | Meaning | Default |
+  |-----|---------|---------|
+  | (a string) | `confirm: "…"` is a `message` alone | — |
+  | `title` | The dialog's title | `Run “<label>”?` |
+  | `message` | Text under the title | none |
+  | `danger` | Hard to undo: the Run button turns red and Cancel has the focus | `false` |
+  | `button` | The Run button's text | `Run` |
+  | `preview` | A command run before the dialog opens; its stdout shows in the dialog | none |
+  | `allowOnPreviewError` | Let Run through when the preview fails | `false` |
+
+  `title` and `message` take the same placeholders as the command and are shown as plain
+  text, never HTML. The command itself is always in the dialog, folded under the message —
+  what the dialog shows is what runs. A preview that prints a unified diff is drawn like a
+  diff block, a JSON array of objects as a table, anything else as text; a failed preview
+  (non-zero exit, timeout) shows its output and keeps Run disabled. An unknown key or a
+  wrong type is a config problem, listed by `emu pages`.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row and segment are remembered
   per browser.
@@ -945,7 +976,7 @@ emu pages                          # pages, items and blocks (--json available)
 emu run templates.sync             # same as pressing the button: its output, then a result line
 emu run templates.local on         # a toggle takes on/off
 emu run templates.local            # …or nothing, to print where it stands
-emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
+emu run templates.publish --select name=home_banner         # confirm: prints the dialog and preview, asks y/N (--yes skips)
 emu run links.routes.open --row route=home        # a row button, as if pressed on that row
 emu run links.link.open --input url=myapp://home   # a form button with what's typed
 emu block templates.items          # what a list shows, as a table

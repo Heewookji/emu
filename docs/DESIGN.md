@@ -129,6 +129,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 | `emu errors` — 이미 캡처되던 로그를 배너 단위로 구조화 | I5(관측 프리미티브 정제) | ✅ |
 | `emu memory --diff-across` — 힙 인스턴스 수 diff, 새 관측 축(메모리) | I5 | ✅ |
 | `emu open-url` — 딥링크 전송, 기기 셸 인용까지 포함 | I5(에이전트 우선 — adb/xcrun 직접 호출 불필요) | ✅ |
+| 대시보드 확인 창 `confirm:` 맵 — 설명·강조·preview 를 더해도 실행할 명령은 늘 보인다 | I1(대시보드·`emu run` 이 같은 428 응답), I5(실행 전 관측) | ✅ |
 | 디바이스 임대 — 한 기기 = 한 서버, 프로젝트·worktree 간에도([`DEVICE_LEASE.md`](DEVICE_LEASE.md)) | I1(서버가 기기까지 단독 소유), I5(섞인 입력으로 판정 오염 방지) | ✅ |
 
 보류 항목(전부 근거 있는 보류)도 불변식으로 설명된다:
