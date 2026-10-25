@@ -363,8 +363,9 @@ class DiffBlock extends PageBlock {
 
 /// A project HTML file in a sandboxed frame, for what lists and diffs can't
 /// show (a value tree, an image preview). The frame gets [run]'s output as
-/// data and may ask the dashboard to run the toolbar items in [actions] —
-/// nothing else: no network, no access to the dashboard.
+/// data and may ask the dashboard to run the toolbar items in [actions] and
+/// its own [blockActions], passing [inputs] — nothing else: no network, no
+/// access to the dashboard.
 class HtmlBlock extends PageBlock {
   const HtmlBlock({
     required super.id,
@@ -374,6 +375,8 @@ class HtmlBlock extends PageBlock {
     required this.src,
     this.run,
     this.actions = const [],
+    this.blockActions = const [],
+    this.inputs = const [],
   });
 
   final String title;
@@ -384,8 +387,19 @@ class HtmlBlock extends PageBlock {
   /// Prints the frame's data (JSON, or any text); null: the frame gets none.
   final PageCommand? run;
 
-  /// Toolbar items the frame may run (`postMessage({type: 'emu:action', id})`).
+  /// Toolbar items the frame may run (`emu.run(id)`, or the older
+  /// `postMessage({type: 'emu:action', id})`).
   final List<String> actions;
+
+  /// Actions of this block alone (`- action: {…}` under `actions:`): not in
+  /// the toolbar, run at `frames/<block>/<action>`.
+  final List<PageAction> blockActions;
+
+  /// The `{{input.<name>}}` values the frame may pass with `emu.run`; any
+  /// other name it sends is dropped.
+  final List<String> inputs;
+
+  PageAction? action(String id) => blockActions.where((a) => a.id == id).firstOrNull;
 
   @override
   PageCommand? get command => run;
@@ -400,6 +414,8 @@ class HtmlBlock extends PageBlock {
         'command': ?run?.display,
         'uses': run?.placeholders.toList() ?? const [],
         'actions': actions,
+        'blockActions': [for (final a in blockActions) a.toJson()],
+        'inputs': inputs,
         'watch': watch,
       };
 }
@@ -523,15 +539,19 @@ PagesConfig parsePages(Object? raw) {
 
 /// Who may use which placeholder: the selection everywhere but in the list
 /// that makes it, a row only in that list's row buttons, a segment only in
-/// a diff with segments, an input only in its own form's buttons.
+/// a diff with segments, an input only in its own form's buttons or an html
+/// block's own actions.
 class _Allowed {
-  const _Allowed({this.selected = true, this.row = false, this.seg = false, this.inputs});
+  const _Allowed({this.selected = true, this.row = false, this.seg = false, this.inputs, this.inputsOf = 'form'});
   final bool selected;
   final bool row;
   final bool seg;
 
-  /// The form's field names; null outside a form.
+  /// The form's field names or the html block's `inputs:`; null elsewhere.
   final Set<String>? inputs;
+
+  /// What declares [inputs]: `form` or `html`.
+  final String inputsOf;
 }
 
 DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
@@ -578,6 +598,13 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
       final unknown = block.actions.where((a) => toolbar.whereType<PageAction>().every((i) => i.id != a)).toList();
       if (unknown.isNotEmpty) {
         problems.add('$id.${block.id}.actions: no toolbar action ${unknown.map((a) => '"$a"').join(', ')} on this page');
+        continue;
+      }
+      // The frame names either kind by id alone, so one id means one thing.
+      final both = block.blockActions.where((a) => toolbar.any((i) => i.id == a.id)).toList();
+      if (both.isNotEmpty) {
+        problems.add('$id.${block.id}.actions: ${both.map((a) => '"${a.id}"').join(', ')} is also a toolbar id — '
+            'name the block\'s own action differently');
         continue;
       }
     }
@@ -758,12 +785,7 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     }
     final run = m['run'] == null ? null : _command(m['run'], '$where.run', const _Allowed(), problems);
     if (m['run'] != null && run == null) return null;
-    final actions = m['actions'] == null ? const <String>[] : _strings(m['actions']);
-    if (actions == null) {
-      problems.add('$where.actions: expected a list of toolbar action ids');
-      return null;
-    }
-    return HtmlBlock(id: id, area: area, watch: watch, title: title, src: src, run: run, actions: actions);
+    return _parseHtml(m, id, area, watch, title, src, run, where, problems);
   }
   if (kind == 'diff') {
     final segments = m['segments'] == null ? const <String>[] : _strings(m['segments']);
@@ -813,6 +835,51 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     key: m['key']?.toString(),
     columns: columns,
     rowActions: rowActions,
+  );
+}
+
+/// An html block's `inputs:` and `actions:` — toolbar ids as strings, its own
+/// actions as `- action: {…}` maps that may read `{{input.<name>}}`.
+HtmlBlock? _parseHtml(Map m, String id, String area, List<String> watch, String title, String src, PageCommand? run,
+    String where, List<String> problems) {
+  final inputs = m['inputs'] == null ? const <String>[] : _strings(m['inputs']);
+  if (inputs == null || !inputs.every(isPageId) || inputs.toSet().length != inputs.length) {
+    problems.add('$where.inputs: expected a list of distinct names of letters, digits, - or _');
+    return null;
+  }
+  final rawActions = m['actions'] ?? const [];
+  if (rawActions is! List) {
+    problems.add('$where.actions: expected a list of toolbar action ids and `- action: {…}` entries');
+    return null;
+  }
+  final allowed = _Allowed(inputs: inputs.toSet(), inputsOf: 'html');
+  final actions = <String>[];
+  final blockActions = <PageAction>[];
+  for (final (j, e) in rawActions.indexed) {
+    if (e is String) {
+      actions.add(e);
+      continue;
+    }
+    final body = e is Map && e.length == 1 && e.keys.first == 'action' ? e.values.first : null;
+    final aid = body is Map ? body['id']?.toString() : null;
+    if (aid == null || !isPageId(aid) || blockActions.any((a) => a.id == aid)) {
+      problems.add('$where.actions[$j]: expected a toolbar action id, or `- action: {id: …, run: […]}` '
+          'with an id unique in this block');
+      continue;
+    }
+    final a = _parseAction(body as Map, aid, '$where.$aid', allowed, problems);
+    if (a != null) blockActions.add(a);
+  }
+  return HtmlBlock(
+    id: id,
+    area: area,
+    watch: watch,
+    title: title,
+    src: src,
+    run: run,
+    actions: actions,
+    blockActions: blockActions,
+    inputs: inputs,
   );
 }
 
@@ -915,7 +982,8 @@ bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> pr
       'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
       'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
       'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
-      'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
+      'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions or an html block\'s own actions',
+      'input' when allowed.inputsOf == 'html' && !allowed.inputs!.contains(name) => 'no "$name" in this block\'s inputs:',
       'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
       'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
       'selected' || 'row' || 'seg' || 'input' => null,

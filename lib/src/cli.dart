@@ -2177,6 +2177,14 @@ Future<int> _pagesCmd(List<String> args) async {
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
         print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
       }
+      if (b['kind'] == 'html') {
+        final inputs = (b['inputs'] as List? ?? const []);
+        if (inputs.isNotEmpty) print('  ${col('  input', 7)}${inputs.join(', ')}');
+        for (final a in (b['blockActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+          print('  ${col('  html', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
+              '${a['confirm'] == true ? '   (asks first)' : ''}');
+        }
+      }
       if (b['kind'] == 'form') {
         if (b['note'] != null) print('  ${col('  note', 7)}${b['note']}');
         final fields = [for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']];
@@ -2198,7 +2206,8 @@ Future<int> _runCmd(List<String> args) async {
   final parser = ArgParser()
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
     ..addMultiOption('row', abbr: 'r', splitCommas: false, help: "<col>=<value> of a row button's row (repeatable)")
-    ..addMultiOption('input', abbr: 'i', splitCommas: false, help: "<field>=<value> for a form's button (repeatable)")
+    ..addMultiOption('input', abbr: 'i', splitCommas: false,
+        help: "<field>=<value> for a form's button or an html block's action (repeatable)")
     ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: without asking')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
@@ -2206,11 +2215,12 @@ Future<int> _runCmd(List<String> args) async {
       '       emu run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...\n'
       '                                      [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
       '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), a list\'s row\n'
-      '   button or a form\'s button, the same as pressing it in the dashboard. A\n'
-      '   toggle takes on or off. An action marked confirm: shows its dialog (title,\n'
-      '   message, preview, command) and asks y/N on a terminal; --yes skips that.\n'
-      '   --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
-      '   {{input.<field>}}. A toggle without on|off prints its state. Exit 0 =\n'
+      '   button, a form\'s button or an html block\'s own action, the same as\n'
+      '   pressing it in the dashboard. A toggle takes on or off. An action marked\n'
+      '   confirm: shows its dialog (title, message, preview, command) and asks y/N\n'
+      '   on a terminal; --yes skips that. --select fills {{selected.<col>}}, --row\n'
+      '   {{row.<col>}}, --input {{input.<field>}} (for an html block, only names\n'
+      '   in its inputs:). A toggle without on|off prints its state. Exit 0 =\n'
       '   the command and its then: reload/restart succeeded; a failed command\n'
       '   exits with its own code. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
@@ -2263,18 +2273,18 @@ Future<int> _runCmd(List<String> args) async {
   if (target.length == 2) {
     path = '/api/pages/$page/run/${Uri.encodeComponent(target[1])}';
   } else {
-    // A row button or a form button: which, the page's config says.
+    // A row button, a form button or an html block's action: which, the page's config says.
     final pages = await _getJson(info, '/api/pages');
     final blocks = [
       for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
         if (p['id'] == target[0]) ...(p['blocks'] as List).cast<Map<String, dynamic>>(),
     ];
     final kind = blocks.where((b) => b['id'] == target[1]).firstOrNull?['kind'];
-    if (kind != 'list' && kind != 'form') {
-      stderr.writeln('✗ no list, form or panel "${target[1]}" on page ${target[0]}');
+    if (kind != 'list' && kind != 'form' && kind != 'html') {
+      stderr.writeln('✗ no list, form, panel or html block "${target[1]}" on page ${target[0]}');
       return 1;
     }
-    path = '/api/pages/$page/${kind == 'list' ? 'rows' : 'forms'}/'
+    path = '/api/pages/$page/${switch (kind) { 'list' => 'rows', 'form' => 'forms', _ => 'frames' }}/'
         '${Uri.encodeComponent(target[1])}/${Uri.encodeComponent(target[2])}';
   }
   Future<Map<String, dynamic>?> post({required bool confirmed}) => _postJson(
@@ -3305,9 +3315,10 @@ COMMANDS
   pages                  List the dashboard pages declared in emu.yaml (`pages:`)
   run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
   run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...
-                         Run a page's toolbar item, row button or form button, as
-                         the dashboard does. A toggle takes on/off; confirm:
-                         actions ask y/N (or --yes); --select/--row/--input fill
+                         Run a page's toolbar item, row button, form button or
+                         html block action, as the dashboard does. A toggle takes
+                         on/off; confirm: actions ask y/N (or --yes);
+                         --select/--row/--input fill
                          {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}
   block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
                          What a page's list (rows) or diff block shows; --select

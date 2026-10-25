@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 12px 14px; font: 12.5px/1.6 -apple-system, system-ui, sans-serif; color: #e6edf3; background: #0d1117; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+  td { padding: 4px 8px; border-bottom: 1px solid #30363d; }
+  .changed { color: #e3b341; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  select, button { font: inherit; color: inherit; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 3px 10px; }
+  button:disabled { opacity: .5; }
+  pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; margin: 0; }
+  .muted { color: #8b949e; }
+</style>
+</head>
+<body>
+  <table id="list"><tr><td class="muted">loading…</td></tr></table>
+  <div class="row">
+    <label class="muted" for="env">env</label>
+    <select id="env"><option>stage</option><option>prod</option></select>
+    <button id="deploy">Deploy…</button>
+    <button id="sync">sync</button>
+  </div>
+  <pre id="out" class="muted">preview → confirm → deploy, without leaving this view</pre>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const show = (text, muted = false) => { $('out').textContent = text; $('out').className = muted ? 'muted' : ''; };
+
+  // The block's run: output, on load and after every run on the page.
+  emu.onData(({ ok, data, error }) => {
+    $('list').replaceChildren(...(ok && Array.isArray(data) ? data : []).map((t) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td></td><td></td>';
+      tr.cells[0].textContent = t.path;
+      tr.cells[1].textContent = t.changed ? 'changed' : '';
+      tr.cells[1].className = 'changed';
+      return tr;
+    }));
+    if (!ok && error) show(error);
+  });
+
+  $('deploy').onclick = async () => {
+    const env = $('env').value;
+    $('deploy').disabled = true;
+    try {
+      // 1. Preview: an action of this block, its stdout JSON comes back as data.
+      const plan = await emu.run('plan', { input: { env } });
+      if (!plan.ok) return emu.toast(`preview failed: ${plan.error}`, 'error');
+
+      // 2. Ask — the dashboard draws these outside the frame, headed with this view's name.
+      const answer = await emu.prompt({
+        title: `Deploy to ${env}`,
+        message: 'A note for the deploy log.',
+        fields: [{ name: 'message', label: 'message', default: 'from the deploy view' }],
+      });
+      if (!answer) return show('cancelled', true);
+      const ok = await emu.confirm({
+        title: `Push ${plan.data.length} templates to ${env}?`,
+        message: 'These go to the deploy repository right away.',
+        detail: plan.data.map((t) => t.path).join('\n'),
+        danger: env === 'prod',
+        button: 'push',
+      });
+      if (!ok) return show('cancelled', true);
+
+      // 3. Run. deploy is confirm: true, so the dashboard asks once more with
+      //    the exact command — a frame can't skip that.
+      const run = await emu.run('deploy', { input: { env, message: answer.message } });
+      show(run.cancelled ? 'cancelled' : `${run.ok ? '✓' : '✗'} ${run.error || 'exit 0'}\n${run.output}`, run.cancelled);
+    } finally {
+      $('deploy').disabled = false;
+    }
+  };
+
+  // A toolbar action listed under the block's actions.
+  $('sync').onclick = async () => {
+    const r = await emu.run('sync');
+    show(`${r.ok ? '✓' : '✗'} ${r.output}`);
+  };
+</script>
+</body>
+</html>

@@ -855,14 +855,15 @@ pages:
 |-------|--------------------|----------|
 | `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
 | `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
-| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
+| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
 | `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
 | `output` | — | The page's last run: command, exit code, time, output |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
-  `{{input.<field>}}` — a form's field, in that form's buttons.
+  `{{input.<field>}}` — a form's field, in that form's buttons, or a value an html block passes
+  to its own actions (only names in its `inputs:`).
   They work only in `[program, arg, …]` commands, and each value stays inside its own
   argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
   is never run. A shell-string command with a placeholder is a config error, and so is one
@@ -940,22 +941,60 @@ pages:
   ```
 - An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
   frame with its own opaque origin and no network (`default-src 'none'`): it can't read the
-  dashboard, the session token or other blocks. Its data arrives by `postMessage` as
-  `{type: "emu:data", ok, data, text, error, needs, selected}` after it loads and on every
-  refresh (post `{type: "emu:ready"}` to ask again). It runs a toolbar action by posting
-  `{type: "emu:action", id}` — only ids listed in `actions:`, with the same confirmation as
-  the button. Saving the file reloads the frame.
+  dashboard, the session token or other blocks. The dashboard puts a small helper in front of
+  the file, `window.emu`, so the view talks to the dashboard without handling `postMessage`
+  itself. Saving the file reloads the frame.
 
-  ```html
-  <!doctype html>
-  <pre id="out"></pre>
-  <script>
-    addEventListener('message', (e) => {
-      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
-    });
-    parent.postMessage({ type: 'emu:ready' }, '*');
-  </script>
+  | Call | Does | Resolves to |
+  |------|------|-------------|
+  | `emu.onData(fn)` | `fn({ok, data, text, error, needs, selected})` with the block's `run:` output — now if it came already, and on every refresh | an unsubscribe function |
+  | `emu.run(id, {input})` | runs an id from the block's `actions:` — its own action, or a toolbar action it lists | `{ok, exitCode, error, output, data}` — `data` when stdout is JSON; `cancelled` / `busy` / `needs` when it didn't run |
+  | `emu.confirm({title, message, detail, danger, button})` | asks yes/no | `true` / `false` |
+  | `emu.prompt({title, message, fields: [{name, label, default}]})` | asks for text | `{name: value, …}` or `null` |
+  | `emu.toast(text, level)` | a toast, prefixed with the block's title | — |
+
+  ```yaml
+  - html:
+      id: view
+      title: Deploy
+      src: tool/emu/deploy.html
+      run: [./tool/tpl.sh, list]          # → emu.onData
+      inputs: [env, message]              # what emu.run may pass as {{input.*}}
+      actions:
+        - sync                            # a toolbar action the view may run
+        - action:                         # this block's own: not in the toolbar
+            id: plan
+            run: [./tool/tpl.sh, plan, "{{input.env}}"]
+        - action:
+            id: deploy
+            run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
+            confirm: true
   ```
+
+  ```js
+  emu.onData(({ data }) => render(data));
+  const plan = await emu.run('plan', { input: { env: 'stage' } });
+  if (!plan.ok) return emu.toast(`preview failed: ${plan.error}`, 'error');
+  if (await emu.confirm({ title: `Push ${plan.data.length} templates?`, detail: plan.data.map(t => t.path).join('\n') })) {
+    await emu.run('deploy', { input: { env: 'stage', message: 'from the view' } });
+  }
+  ```
+
+  A full example is in [`docs/examples/html-block`](docs/examples/html-block). What keeps a
+  view in its place:
+  - Dialogs are drawn by the dashboard, outside the frame, headed with who asks
+    (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`), and every text in them is shown as text,
+    never as HTML. One dialog at a time: a request while one is open answers `busy`
+    (`false`/`null`). Only a frame of the page on screen gets answers.
+  - `emu.confirm` is the view's own question; it doesn't stand in for `confirm: true`. Such an
+    action asks again in the dashboard's own dialog with the exact command, also when a frame
+    runs it — a frame can't send `confirmed`.
+  - A view whose dialogs keep getting cancelled is offered **Block requests from this view**;
+    then, until the dashboard reloads, its `confirm`/`prompt` answer no at once.
+  - `input` goes only into names listed in `inputs:` (anything else is dropped), each value inside
+    one argument as with every placeholder.
+  - Without the helper: data arrives as `{type: "emu:data", …}`, `{type: "emu:ready"}` asks for it
+    again, and `{type: "emu:action", id}` runs an action with no answer — as before.
 
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
@@ -979,6 +1018,7 @@ emu run templates.local            # …or nothing, to print where it stands
 emu run templates.publish --select name=home_banner         # confirm: prints the dialog and preview, asks y/N (--yes skips)
 emu run links.routes.open --row route=home        # a row button, as if pressed on that row
 emu run links.link.open --input url=myapp://home   # a form button with what's typed
+emu run deploy.view.plan --input env=stage         # an html block's own action, with its inputs:
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```

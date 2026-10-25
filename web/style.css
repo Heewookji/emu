@@ -312,6 +312,15 @@ body.resizing iframe { pointer-events: none; }
 }
 .confirm-preview pre.pv-body { margin-top: 6px; }
 .confirm-preview.failed .pv-body { border-color: #f8514966; }
+/* Who asks, when a custom view (html block) does — so it can't pass for emu itself. */
+.modal-from {
+  padding: 8px 18px; border-bottom: 1px solid var(--border); background: #9e6a001f; color: #e3b341;
+  font-size: 11.5px; border-radius: 10px 10px 0 0; word-break: break-word;
+}
+.confirm-msg { word-break: break-word; }
+.modal-body pre.modal-detail { max-height: 40vh; overflow: auto; word-break: break-word; margin-bottom: 10px; }
+.modal-fields { padding: 0 0 10px; }
+.modal-detail[hidden], .modal-fields[hidden], .modal-from[hidden], #confirm-command[hidden] { display: none; }
 
 /* Page blocks: list (table of a command's JSON rows) and diff (its patch). */
 .ext-block.loading > :not(.blk-head) { opacity: .55; }
