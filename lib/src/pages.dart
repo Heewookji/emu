@@ -8,8 +8,9 @@
 /// Commands come only from the config. A request names an item by id and
 /// never carries a command, so the dashboard can run exactly what the project
 /// declared — the same trust as the `onDeviceReady`/`onAppStarted` hooks. The
-/// values a request does carry (the selected row, a segment) fill
-/// placeholders such as `{{selected.name}}`, each inside its own argument.
+/// values a request does carry (the selected row, a segment, the checked
+/// rows) fill placeholders such as `{{selected.name}}`, each inside its own
+/// argument — or, for `{{checked.name...}}`, as arguments of their own.
 ///
 /// Parsing is pure and collects every problem instead of failing: one typo
 /// hides one item, not the whole page.
@@ -23,8 +24,12 @@ bool isPageId(String s) => _id.hasMatch(s);
 /// The built-in page the dashboard always shows first.
 const debugPageId = 'debug';
 
-/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`, `{{input.<field>}}`.
-final _placeholder = RegExp(r'\{\{\s*([A-Za-z]+)(?:\.([A-Za-z0-9_-]+))?\s*\}\}');
+/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`, `{{input.<field>}}`,
+/// `{{checked.<column>}}`, `{{checked.<column>...}}`, `{{checked.count}}` —
+/// the checked ones also as `{{<list>.checked.…}}`. Groups: list, kind,
+/// column, `...`.
+final _placeholder = RegExp(
+    r'\{\{\s*(?:([A-Za-z0-9][A-Za-z0-9_-]*)\.(?=checked\.))?([A-Za-z]+)(?:\.([A-Za-z0-9_-]+))?(\.\.\.)?\s*\}\}');
 final _braces = RegExp(r'\{\{.*?\}\}');
 
 /// A command from the config: an argv list, started directly, or a string,
@@ -45,35 +50,69 @@ class PageCommand {
   /// What runs, for people (confirm dialog, `emu pages`): argv shell-quoted.
   String get display => argv?.map(shellQuote).join(' ') ?? shell!;
 
-  /// The placeholders used, as `selected.name`, `row.id`, `seg`, `input.url`.
+  /// The placeholders used, as `selected.name`, `row.id`, `seg`, `input.url`,
+  /// `checked.name...`, `templates.checked.count`.
   Set<String> get placeholders => {
         for (final arg in argv ?? const <String>[])
           for (final m in _placeholder.allMatches(arg)) _key(m),
       };
 
+  /// The lists whose checked rows this command reads; an unqualified
+  /// `{{checked.*}}` is [checkList]'s (the page's one list with `check:`).
+  Set<String> checkedLists(String? checkList) => {for (final arg in argv ?? const <String>[]) ..._checkedIn(arg, checkList)};
+
+  static Set<String> _checkedIn(String text, String? checkList) => {
+        for (final m in _placeholder.allMatches(text))
+          if (m.group(2) == 'checked') ?(m.group(1) ?? checkList),
+      };
+
   /// This command with every placeholder filled from [vars] (keys as in
-  /// [placeholders]). A value replaces its placeholder inside that one
-  /// argument — spaces or `;` in it are never split or run. Throws
-  /// [MissingValue] for the first placeholder [vars] has no value for.
-  PageCommand fill(Map<String, String> vars) {
+  /// [placeholders]) and [checked] (list id → its checked rows; an
+  /// unqualified `{{checked.*}}` reads [checkList]'s). A value replaces its
+  /// placeholder inside that one argument — spaces or `;` in it are never
+  /// split or run; `{{checked.<col>...}}` becomes one argument per checked
+  /// row, and none for no rows. Throws [MissingValue] for the first
+  /// placeholder there is no value for.
+  PageCommand fill(Map<String, String> vars,
+      {Map<String, List<Map<String, String>>> checked = const {}, String? checkList}) {
     final a = argv;
     if (a == null) return this;
     return PageCommand.argv([
       for (final arg in a)
-        arg.replaceAllMapped(_placeholder, (m) => vars[_key(m)] ?? (throw MissingValue(_key(m)))),
+        if (_placeholder.matchAsPrefix(arg) case final m? when m.group(4) != null && m.end == arg.length)
+          for (final row in _rows(m, checked, checkList)) _column(row, m)
+        else
+          _fillText(arg, vars, checked, checkList),
     ]);
   }
 
-  static String _key(Match m) => m.group(2) == null ? m.group(1)! : '${m.group(1)}.${m.group(2)}';
+  static List<Map<String, String>> _rows(Match m, Map<String, List<Map<String, String>>> checked, String? checkList) =>
+      checked[m.group(1) ?? checkList] ?? const [];
+
+  static String _column(Map<String, String> row, Match m) => row[m.group(3)] ?? (throw MissingValue(_key(m)));
+
+  /// [text] with each placeholder replaced by its one value; a checked
+  /// column is the checked rows' values joined with commas.
+  static String _fillText(
+          String text, Map<String, String> vars, Map<String, List<Map<String, String>>> checked, String? checkList) =>
+      text.replaceAllMapped(_placeholder, (m) {
+        if (m.group(2) != 'checked') return vars[_key(m)] ?? (throw MissingValue(_key(m)));
+        final r = _rows(m, checked, checkList);
+        return m.group(3) == 'count' ? '${r.length}' : [for (final row in r) _column(row, m)].join(',');
+      });
+
+  static String _key(Match m) => [m.group(1), m.group(2), m.group(3)].nonNulls.join('.') + (m.group(4) ?? '');
 }
+
+final _checkedKey = RegExp(r'^(?:[^.]+\.)?checked\.');
 
 /// A placeholder with no value in the request, e.g. no row selected yet.
 class MissingValue implements Exception {
   MissingValue(this.key);
   final String key;
 
-  /// `selected`, `row`, `seg` or `input`.
-  String get kind => key.split('.').first;
+  /// `selected`, `row`, `seg`, `input` or `checked`.
+  String get kind => _checkedKey.hasMatch(key) ? 'checked' : key.split('.').first;
 
   @override
   String toString() => 'no value for {{$key}}';
@@ -161,10 +200,19 @@ class ConfirmSpec {
         ...?preview?.placeholders,
       };
 
-  /// [text] with its placeholders filled from [vars], as plain text. Throws
+  /// The lists whose checked rows the title, message and preview read, as
+  /// in [PageCommand.checkedLists].
+  Set<String> checkedLists(String? checkList) => {
+        for (final text in [?title, ?message]) ...PageCommand._checkedIn(text, checkList),
+        ...?preview?.checkedLists(checkList),
+      };
+
+  /// [text] with its placeholders filled from [vars] and [checked], as plain
+  /// text (`{{checked.count}}`, a checked column comma-joined). Throws
   /// [MissingValue] like [PageCommand.fill].
-  static String fillText(String text, Map<String, String> vars) => text.replaceAllMapped(
-      _placeholder, (m) => vars[PageCommand._key(m)] ?? (throw MissingValue(PageCommand._key(m))));
+  static String fillText(String text, Map<String, String> vars,
+          {Map<String, List<Map<String, String>>> checked = const {}, String? checkList}) =>
+      PageCommand._fillText(text, vars, checked, checkList);
 }
 
 /// Runs [run] when pressed — a toolbar button, a button on each row of a list
@@ -181,6 +229,8 @@ class PageAction extends ToolbarItem {
     super.then = Then.none,
     super.timeout = defaultTimeout,
     this.confirm,
+    this.needsChecked,
+    this.bulk = false,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -191,6 +241,13 @@ class PageAction extends ToolbarItem {
 
   /// null: runs without asking.
   final ConfirmSpec? confirm;
+
+  /// `needs: checked`: the list that must have a checked row before this runs.
+  final String? needsChecked;
+
+  /// A row button that also runs once per checked row, from the list's head
+  /// (`bulk: true`). The dashboard does the rounds; each is a plain row run.
+  final bool bulk;
 
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
@@ -209,6 +266,8 @@ class PageAction extends ToolbarItem {
         'confirm': confirm != null,
         if (confirm?.danger == true) 'danger': true,
         'preview': ?confirm?.preview?.display,
+        'needsChecked': ?needsChecked,
+        if (bulk) 'bulk': true,
       };
 }
 
@@ -282,10 +341,35 @@ class ListColumn {
   Map<String, dynamic> toJson() => {'key': key, 'format': format};
 }
 
+/// How a list's rows get checked (`check:`): by the dashboard, which keeps
+/// the checked keys per browser (`check: true`), or by the tool — the
+/// [column] of each row says whether it is checked and [toggle] flips it.
+class ListCheck {
+  const ListCheck({this.column, this.toggle});
+
+  final String? column;
+
+  /// Runs with the row in `{{row.<col>}}`; as a row action its id is `check`.
+  final PageAction? toggle;
+
+  Map<String, dynamic> toJson() => {
+        'column': ?column,
+        'toggle': ?toggle?.display,
+      };
+}
+
+/// Whether a `check.column` value means checked: true, a non-zero number,
+/// or a word like yes/on/checked.
+bool isCheckedValue(Object? v) =>
+    v == true ||
+    (v is num && v != 0) ||
+    (v is String && RegExp(r'^(true|yes|y|on|1|checked)$', caseSensitive: false).hasMatch(v.trim()));
+
 /// A table of the JSON array of objects [run] prints. The first list on a
 /// page holds the page's selection: picking a row fills `{{selected.<col>}}`
 /// for the other blocks and the toolbar. [rowActions] are buttons on every
-/// row, with that row in `{{row.<col>}}`.
+/// row, with that row in `{{row.<col>}}`. With [check], rows can also be
+/// checked — many at once — for `{{checked.<col>...}}` in the page's actions.
 class ListBlock extends PageBlock {
   const ListBlock({
     required super.id,
@@ -296,6 +380,7 @@ class ListBlock extends PageBlock {
     this.key,
     this.columns = const [],
     this.rowActions = const [],
+    this.check,
   });
 
   final PageCommand run;
@@ -308,11 +393,21 @@ class ListBlock extends PageBlock {
   /// Empty: every field of the first row, as text.
   final List<ListColumn> columns;
   final List<PageAction> rowActions;
+  final ListCheck? check;
 
   @override
   PageCommand get command => run;
 
-  PageAction? rowAction(String id) => rowActions.where((a) => a.id == id).firstOrNull;
+  PageAction? rowAction(String id) =>
+      id == 'check' && check?.toggle != null ? check!.toggle : rowActions.where((a) => a.id == id).firstOrNull;
+
+  /// The value that tells [row] apart: [key], else the first column, else
+  /// the row's first field.
+  String? rowKey(Map<String, dynamic> row) {
+    final col = key ?? columns.firstOrNull?.key ?? row.keys.firstOrNull;
+    final v = row[col];
+    return v == null ? null : v is String ? v : v is num || v is bool ? '$v' : null;
+  }
 
   @override
   Map<String, dynamic> toJson() => {
@@ -325,6 +420,7 @@ class ListBlock extends PageBlock {
         'key': ?key,
         'columns': [for (final c in columns) c.toJson()],
         'rowActions': [for (final a in rowActions) a.toJson()],
+        'check': ?check?.toJson(),
         'watch': watch,
       };
 }
@@ -487,6 +583,20 @@ class DashboardPage {
   /// The list whose picked row is `{{selected.*}}`.
   ListBlock? get selectionList => blocks.whereType<ListBlock>().firstOrNull;
 
+  /// The lists with `check:`.
+  Iterable<ListBlock> get checkLists => blocks.whereType<ListBlock>().where((b) => b.check != null);
+
+  /// The list an unqualified `{{checked.*}}` reads: the page's only one with
+  /// `check:`.
+  String? get checkList => checkLists.length == 1 ? checkLists.first.id : null;
+
+  /// The lists whose checked rows [action] reads or needs.
+  Set<String> checkedListsOf(PageAction action) => {
+        ...(action.run ?? action.openUrl)!.checkedLists(checkList),
+        ...?action.confirm?.checkedLists(checkList),
+        ?action.needsChecked,
+      };
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'title': title,
@@ -540,9 +650,11 @@ PagesConfig parsePages(Object? raw) {
 /// Who may use which placeholder: the selection everywhere but in the list
 /// that makes it, a row only in that list's row buttons, a segment only in
 /// a diff with segments, an input only in its own form's buttons or an html
-/// block's own actions.
+/// block's own actions, the checked rows only in buttons (toolbar, row and
+/// form actions).
 class _Allowed {
-  const _Allowed({this.selected = true, this.row = false, this.seg = false, this.inputs, this.inputsOf = 'form'});
+  const _Allowed(
+      {this.selected = true, this.row = false, this.seg = false, this.inputs, this.inputsOf = 'form', this.checks});
   final bool selected;
   final bool row;
   final bool seg;
@@ -552,6 +664,22 @@ class _Allowed {
 
   /// What declares [inputs]: `form` or `html`.
   final String inputsOf;
+
+  /// The page's lists with `check:`; null where `{{checked.*}}` can't be used.
+  final Set<String>? checks;
+
+  _Allowed get noChecks => _Allowed(selected: selected, row: row, seg: seg, inputs: inputs, inputsOf: inputsOf);
+}
+
+/// The list an unqualified (null) [list] means in `{{checked.*}}` or
+/// `needs: checked`, or why there is none.
+(String?, String?) _checkTarget(String? list, Set<String> checks) {
+  if (list != null) return checks.contains(list) ? (list, null) : (null, 'no list "$list" with check: on this page');
+  return switch (checks.length) {
+    0 => (null, 'no list on this page has check: — add check: true to one'),
+    1 => (checks.single, null),
+    _ => (null, 'several lists have check: — say which, as {{<list>.checked.<col>}} or needs: <list>.checked'),
+  };
 }
 
 DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
@@ -582,9 +710,15 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
     return itemId;
   }
 
+  // The lists with check:, known up front: any action may read their rows.
+  final checks = <String>{
+    if (raw['blocks'] case final List bs)
+      for (final b in bs)
+        if (b case {'list': final Map m} when m['check'] != null && m['check'] != false) '${m['id'] ?? 'list'}',
+  };
   final toolbar = <ToolbarItem>[];
   for (final (j, entry) in _entries(raw['toolbar'], '$id.toolbar', problems).indexed) {
-    final item = _parseToolbarItem(entry, '$id.toolbar[$j]', claim, problems);
+    final item = _parseToolbarItem(entry, '$id.toolbar[$j]', claim, problems, checks);
     if (item != null) toolbar.add(item);
   }
   final blocks = <PageBlock>[];
@@ -592,7 +726,7 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
   for (final (j, entry) in _entries(raw['blocks'], '$id.blocks', problems).indexed) {
     // The first list makes the selection, so it can't depend on it.
     final makesSelection = entry.$1 == 'list' && !listSeen;
-    final block = _parseBlock(entry, '$id.blocks[$j]', claim, problems, makesSelection: makesSelection);
+    final block = _parseBlock(entry, '$id.blocks[$j]', claim, problems, checks, makesSelection: makesSelection);
     if (block is ListBlock) listSeen = true;
     if (block is HtmlBlock) {
       final unknown = block.actions.where((a) => toolbar.whereType<PageAction>().every((i) => i.id != a)).toList();
@@ -633,7 +767,7 @@ List<(String, Map)> _entries(Object? raw, String at, List<String> problems) {
 }
 
 ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
-    String? Function(Object?, String) claim, List<String> problems) {
+    String? Function(Object?, String) claim, List<String> problems, Set<String> checks) {
   final (kind, m) = entry;
   if (kind != 'action' && kind != 'toggle') {
     problems.add('$at: unknown toolbar item "$kind" (action, toggle)');
@@ -642,7 +776,7 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   final id = claim(m['id'], at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  if (kind == 'action') return _parseAction(m, id, where, const _Allowed(), problems);
+  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems);
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
@@ -654,12 +788,24 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   return PageToggle(id: id, label: label, state: state, on: on, off: off, then: then, timeout: timeout);
 }
 
-PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems) {
+PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems, {bool bulk = false}) {
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
   final (confirm, confirmOk) = _confirm(m['confirm'], '$where.confirm', allowed, problems);
   if (!confirmOk) return null;
+  String? needsChecked;
+  if (m['needs'] != null) {
+    final needs = '${m['needs']}';
+    final list = needs == 'checked' ? null : needs.endsWith('.checked') ? needs.substring(0, needs.length - 8) : '';
+    final checks = allowed.checks;
+    final (target, why) = list == '' || checks == null ? (null, 'needs takes checked or <list>.checked') : _checkTarget(list, checks);
+    if (target == null) {
+      problems.add('$where.needs: $why');
+      return null;
+    }
+    needsChecked = target;
+  }
   if (m['openUrl'] != null) {
     if (m['run'] != null) {
       problems.add('$where: give run or openUrl, not both');
@@ -676,11 +822,13 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
       if (url is! String || url.trim().isEmpty) problems.add('$where.openUrl: expected a URL like "myapp://home?id={{row.id}}"');
       return null;
     }
-    return PageAction(id: id, label: label, openUrl: openUrl, timeout: timeout, confirm: confirm);
+    return PageAction(
+        id: id, label: label, openUrl: openUrl, timeout: timeout, confirm: confirm, needsChecked: needsChecked, bulk: bulk);
   }
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
-  return PageAction(id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm);
+  return PageAction(
+      id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm, needsChecked: needsChecked, bulk: bulk);
 }
 
 const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowOnPreviewError'};
@@ -751,7 +899,7 @@ const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowO
 }
 
 PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?, String) claim,
-    List<String> problems, {required bool makesSelection}) {
+    List<String> problems, Set<String> checks, {required bool makesSelection}) {
   final (kind, m) = entry;
   if (!const {'output', 'list', 'diff', 'html', 'form', 'panel'}.contains(kind)) {
     problems.add('$at: unknown block "$kind" (list, diff, html, form, panel, output)');
@@ -774,7 +922,9 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     return OutputBlock(id: id, area: area);
   }
   final title = '${m['title'] ?? id}';
-  if (kind == 'form' || kind == 'panel') return _parseForm(m, id, area, title, where, problems, panel: kind == 'panel');
+  if (kind == 'form' || kind == 'panel') {
+    return _parseForm(m, id, area, title, where, problems, checks, panel: kind == 'panel');
+  }
   final watch = _watch(m['watch'], '$where.watch', problems);
   if (watch == null) return null;
   if (kind == 'html') {
@@ -814,16 +964,37 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     }
     columns.add(ListColumn(parts.first, format));
   }
+  final rowAllowed = _Allowed(selected: !makesSelection, row: true, checks: checks);
+  ListCheck? check;
+  switch (m['check']) {
+    case null || false:
+      break;
+    case true:
+      check = const ListCheck();
+    case {'column': final String column, 'toggle': final Object toggle} when column.isNotEmpty:
+      final run = _command(toggle, '$where.check.toggle', rowAllowed.noChecks, problems);
+      if (run == null) return null;
+      check = ListCheck(column: column, toggle: PageAction(id: 'check', label: 'check', run: run));
+    default:
+      problems.add('$where.check: expected true, or {column: <col>, toggle: [program, arg, …]}');
+      return null;
+  }
   final rowActions = <PageAction>[];
-  final rowIds = <String>{};
+  final rowIds = <String>{if (check?.toggle != null) 'check'};
   for (final (j, e) in _entries(m['rowActions'], '$where.rowActions', problems).indexed) {
     final (k, body) = e;
     final rid = body['id']?.toString();
     if (k != 'action' || rid == null || !isPageId(rid) || !rowIds.add(rid)) {
-      problems.add('$where.rowActions[$j]: expected `- action: {id: …, run: […]}` with an id unique in this list');
+      problems.add('$where.rowActions[$j]: expected `- action: {id: …, run: […]}` with an id unique in this list'
+          '${rid == 'check' && check?.toggle != null ? ' (check is taken by check.toggle)' : ''}');
       continue;
     }
-    final a = _parseAction(body, rid, '$where.$rid', _Allowed(selected: !makesSelection, row: true), problems);
+    final bulk = body['bulk'] == true;
+    if (bulk && check == null) {
+      problems.add('$where.$rid.bulk: it runs on the checked rows — give the list check:');
+      continue;
+    }
+    final a = _parseAction(body, rid, '$where.$rid', rowAllowed, problems, bulk: bulk);
     if (a != null) rowActions.add(a);
   }
   return ListBlock(
@@ -835,6 +1006,7 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     key: m['key']?.toString(),
     columns: columns,
     rowActions: rowActions,
+    check: check,
   );
 }
 
@@ -884,7 +1056,8 @@ HtmlBlock? _parseHtml(Map m, String id, String area, List<String> watch, String 
 }
 
 /// A form; with no `fields` (or `panel:`, which takes none) just its buttons.
-FormBlock? _parseForm(Map m, String id, String area, String title, String where, List<String> problems,
+FormBlock? _parseForm(
+    Map m, String id, String area, String title, String where, List<String> problems, Set<String> checks,
     {required bool panel}) {
   final rawFields = m['fields'] ?? const [];
   if (panel && m['fields'] != null) {
@@ -914,7 +1087,7 @@ FormBlock? _parseForm(Map m, String id, String area, String title, String where,
       initial: f['default']?.toString(),
     ));
   }
-  final allowed = _Allowed(inputs: {for (final f in fields) f.name});
+  final allowed = _Allowed(inputs: {for (final f in fields) f.name}, checks: checks);
   final actions = <PageAction>[];
   for (final (j, e) in _entries(m['actions'], '$where.actions', problems).indexed) {
     final (k, body) = e;
@@ -959,26 +1132,39 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
     return null;
   }
   for (final arg in command.argv ?? const <String>[]) {
-    if (!_textPlaceholders(arg, at, allowed, problems)) return null;
+    if (!_textPlaceholders(arg, at, allowed, problems, arg: arg, program: program)) return null;
   }
   return command;
 }
 
 /// Whether every `{{…}}` in [text] is a placeholder [allowed] here; adds the
-/// first that isn't to [problems].
-bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> problems) {
+/// first that isn't to [problems]. [arg]: [text] is that whole argument of a
+/// command ([program] false for an openUrl's); null for a confirm's text.
+bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> problems,
+    {String? arg, bool program = true}) {
   for (final m in _braces.allMatches(text)) {
     final p = _placeholder.matchAsPrefix(m.group(0)!);
-    final kind = p?.group(1);
-    final name = p?.group(2);
+    final kind = p?.group(2);
+    final name = p?.group(3);
     final hasName = name != null;
-    final unknown = 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg, input.<field>)';
+    final spread = p?.group(4) != null;
+    final checks = allowed.checks;
+    final unknown = 'unknown placeholder ${m.group(0)} '
+        '(selected.<col>, row.<col>, seg, input.<field>, checked.<col>, checked.<col>..., checked.count)';
     final String? why = switch (kind) {
       null => unknown,
       'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
       'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
       'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
+      'checked' when !hasName => '{{checked}} needs a column: {{checked.<col>}}, {{checked.<col>...}} or {{checked.count}}',
       'seg' when hasName => '{{seg}} takes no column',
+      _ when spread && kind != 'checked' => '... only spreads checked rows: {{checked.<col>...}}',
+      'checked' when spread && name == 'count' => '{{checked.count}} is one number — drop the ...',
+      'checked' when spread && arg == null => '${m.group(0)} spreads into arguments — in text use {{checked.<col>}} '
+          '(comma-joined) or {{checked.count}}',
+      'checked' when spread && !program => 'an openUrl is one URL — use {{checked.<col>}} (comma-joined)',
+      'checked' when spread && m.group(0) != arg =>
+        '${m.group(0)} must be a whole argument — it becomes one argument per checked row',
       'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
       'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
       'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
@@ -986,6 +1172,8 @@ bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> pr
       'input' when allowed.inputsOf == 'html' && !allowed.inputs!.contains(name) => 'no "$name" in this block\'s inputs:',
       'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
       'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
+      'checked' when checks == null => '{{checked.*}} only works in actions (toolbar, row and form buttons)',
+      'checked' => _checkTarget(p!.group(1), checks!).$2,
       'selected' || 'row' || 'seg' || 'input' => null,
       _ => unknown,
     };

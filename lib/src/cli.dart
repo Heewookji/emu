@@ -2166,16 +2166,28 @@ Future<int> _pagesCmd(List<String> args) async {
     print('${page['id']}  ${page['title']}');
     for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
       final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
-      final notes = [if (i['then'] != 'none') 'then ${i['then']}', if (i['confirm'] == true) 'asks first'];
+      final notes = [
+        if (i['then'] != 'none') 'then ${i['then']}',
+        if (i['confirm'] == true) 'asks first',
+        if (i['needsChecked'] != null) 'needs a checked row in ${i['needsChecked']}',
+      ];
       print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
       final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
       // A form with no fields is a button panel.
       final kind = b['kind'] == 'form' && (b['fields'] as List).isEmpty ? 'panel' : b['kind'];
-      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs'.trimRight());
+      final check = b['check'] as Map?;
+      final checks = check == null
+          ? ''
+          : check['toggle'] == null
+              ? '   (check)'
+              : '   (check: ${check['column']} · toggle: ${check['toggle']})';
+      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+          .trimRight());
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
-        print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
+        print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
+            '${a['bulk'] == true ? '   (bulk: also on the checked rows)' : ''}');
       }
       if (b['kind'] == 'html') {
         final inputs = (b['inputs'] as List? ?? const []);
@@ -2190,8 +2202,12 @@ Future<int> _pagesCmd(List<String> args) async {
         final fields = [for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']];
         if (fields.isNotEmpty) print('  ${col('  field', 7)}${fields.join(', ')}');
         for (final a in (b['actions'] as List).cast<Map<String, dynamic>>()) {
+          final notes = [
+            if (a['confirm'] == true) 'asks first',
+            if (a['needsChecked'] != null) 'needs a checked row in ${a['needsChecked']}',
+          ];
           print('  ${col('  form', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
-              '${a['confirm'] == true ? '   (asks first)' : ''}');
+              '${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
         }
       }
     }
@@ -2208,21 +2224,26 @@ Future<int> _runCmd(List<String> args) async {
     ..addMultiOption('row', abbr: 'r', splitCommas: false, help: "<col>=<value> of a row button's row (repeatable)")
     ..addMultiOption('input', abbr: 'i', splitCommas: false,
         help: "<field>=<value> for a form's button or an html block's action (repeatable)")
+    ..addMultiOption('checked', abbr: 'c', splitCommas: false, help: '[<list>=]<key>,<key>… of the checked rows (repeatable)')
     ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: without asking')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
-  const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
+  const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-c, --checked [<list>=]<key>,…]...\n'
+      '                                [-y, --yes] [--json]\n'
       '       emu run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...\n'
-      '                                      [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
+      '                                      [-s, --select <col>=<value>]... [-c, --checked [<list>=]<key>,…]...\n'
+      '                                      [-y, --yes] [--json]\n'
       '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), a list\'s row\n'
       '   button, a form\'s button or an html block\'s own action, the same as\n'
       '   pressing it in the dashboard. A toggle takes on or off. An action marked\n'
       '   confirm: shows its dialog (title, message, preview, command) and asks y/N\n'
       '   on a terminal; --yes skips that. --select fills {{selected.<col>}}, --row\n'
       '   {{row.<col>}}, --input {{input.<field>}} (for an html block, only names\n'
-      '   in its inputs:). A toggle without on|off prints its state. Exit 0 =\n'
-      '   the command and its then: reload/restart succeeded; a failed command\n'
-      '   exits with its own code. `emu pages` lists the items.';
+      '   in its inputs:), --checked the rows of a check: list by their key\n'
+      '   ({{checked.<col>...}}, {{checked.count}}; <list>= when the page has\n'
+      '   several). A toggle without on|off prints its state. Exit 0 = the command\n'
+      '   and its then: reload/restart succeeded; a failed command exits with its\n'
+      '   own code. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final rest = res.rest;
@@ -2247,6 +2268,32 @@ Future<int> _runCmd(List<String> args) async {
   }
   final info = _requireServer();
   final page = Uri.encodeComponent(target[0]);
+  // --checked keys, by list: the page's one check: true list, or <list>=. The
+  // lists whose tool keeps the checks (check.column) say so themselves.
+  Object? checked;
+  if (res.multiOption('checked') case final given when given.isNotEmpty) {
+    final pages = await _getJson(info, '/api/pages');
+    final lists = {
+      for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
+        if (p['id'] == target[0])
+          for (final b in (p['blocks'] as List).cast<Map<String, dynamic>>())
+            if (b['check'] case final Map c when c['column'] == null) '${b['id']}',
+    };
+    final byList = <String, List<String>>{};
+    for (final c in given) {
+      final eq = c.indexOf('=');
+      final named = eq > 0 && lists.contains(c.substring(0, eq));
+      final list = named ? c.substring(0, eq) : lists.length == 1 ? lists.single : '';
+      byList.putIfAbsent(list, () => []).addAll((named ? c.substring(eq + 1) : c).split(',').where((k) => k.isNotEmpty));
+    }
+    if (byList.containsKey('')) {
+      stderr.writeln(lists.isEmpty
+          ? '✗ no list on page ${target[0]} has check: true'
+          : '✗ page ${target[0]} has several check: true lists — say which: --checked <list>=<key>,…  (${lists.join(', ')})');
+      return 2;
+    }
+    checked = byList;
+  }
   if (target.length == 2 && onOff == null) {
     // A toggle with no on/off: say where it stands instead of refusing.
     final pages = await _getJson(info, '/api/pages');
@@ -2296,6 +2343,7 @@ Future<int> _runCmd(List<String> args) async {
           if (selected.isNotEmpty) 'selected': selected,
           if (row.isNotEmpty) 'row': row,
           if (input.isNotEmpty) 'input': input,
+          'checked': ?checked,
         }),
         // The server bounds the command (its timeout:); this only must outlast it.
         timeout: const Duration(hours: 1),
@@ -2345,6 +2393,7 @@ Future<int> _runCmd(List<String> args) async {
       'selected' => ' (--select <col>=<value>)',
       'row' => ' (--row <col>=<value>)',
       'input' => ' (--input <field>=<value>)',
+      'checked' => ' (--checked <key>,…)',
       _ => '',
     };
     stderr.writeln('✗ ${r['error']}$hint');
@@ -3313,13 +3362,13 @@ COMMANDS
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
   pages                  List the dashboard pages declared in emu.yaml (`pages:`)
-  run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
+  run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-c, --checked <key>,…] [-y, --yes]
   run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...
                          Run a page's toolbar item, row button, form button or
                          html block action, as the dashboard does. A toggle takes
                          on/off; confirm: actions ask y/N (or --yes);
-                         --select/--row/--input fill
-                         {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}
+                         --select/--row/--input/--checked fill
+                         {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}/{{checked.*}}
   block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
                          What a page's list (rows) or diff block shows; --select
                          fills {{selected.<col>}} like picking a row

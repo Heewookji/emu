@@ -824,6 +824,38 @@ pages:
   출력이 unified diff 면 diff 블록처럼, 객체의 JSON 배열이면 표로, 아니면 텍스트로 보인다. preview 가
   실패하면(0 이 아닌 종료, 시간 초과) 그 출력을 보여 주고 Run 을 막는다. 모르는 키나 잘못된 타입은 설정
   문제로 `emu pages` 에 나온다.
+- **체크한 행.** list 에 `check: true` 를 주면 체크박스 열·전체 선택·개수가 생긴다. 고른 행(`selected`)은
+  지금처럼 다른 블록이 따라가는 한 행이고, 체크한 행은 여러 행에 한 번에 하는 일에 쓴다:
+
+  ```yaml
+  - list:
+      id: templates
+      run: [./tool/tpl.sh, list, --json]
+      key: name
+      check: true
+      rowActions:
+        - action: { id: push, run: [./tool/tpl.sh, push, "{{row.name}}"], bulk: true }
+  - form:
+      id: deploy
+      fields: [{ name: env, default: stage }]
+      actions:
+        - action:
+            id: stage
+            run: [./tool/tpl.sh, deploy, --env, "{{input.env}}", "{{checked.name...}}"]
+            needs: checked        # 하나도 체크하지 않으면 비활성
+            confirm: true
+  ```
+
+  `{{checked.<col>...}}` 은 인자 하나 전체여야 하고, 체크한 행 수만큼 인자로 펼친다(`deploy a b c`,
+  0개면 인자 없음) — 값을 쪼개거나 실행하지 않는 건 그대로다. `{{checked.<col>}}` 은 쉼표로 이은 인자
+  하나(`--names a,b,c`), `{{checked.count}}` 는 개수. 버튼(툴바·행·form action)에서만 쓰고, 뒤의 둘은
+  그 버튼 `confirm:` 의 title·message 에도 쓸 수 있다(`템플릿 {{checked.count}}개를 배포할까요?`). 페이지에
+  `check:` list 가 둘 이상이면 `{{templates.checked.name...}}`, `needs: templates.checked` 처럼 list 를
+  밝힌다. 체크 상태는 브라우저별로 기억하고, 목록을 새로 받았을 때 없어진 key 는 버린다. 도구가 상태를
+  가질 때(CLI·다른 탭과 공유)는 `check: {column: upload, toggle: [./tool/tpl.sh, pick, --toggle, "{{row.name}}"]}`:
+  행의 `upload` 값이 true/yes/on/1/checked 면 체크된 것이고, 누르면 그 행으로 `toggle` 을 돌린 뒤 목록을
+  다시 받는다. `bulk: true` 인 행 버튼은 목록 머리에도 생겨 체크한 행마다 차례로 한 번씩 돌리고, 하나
+  실패하면 멈춘다(`confirm: true` 면 한 번만 묻는다).
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
   작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
 - 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
@@ -932,6 +964,8 @@ emu run templates.publish --select name=home_banner         # confirm: 확인 �
 emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
 emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
 emu run deploy.view.plan --input env=stage         # html 블록 자신의 액션, inputs: 의 값과 함께
+emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: check: true list 의 행을 key 로
+emu run tpl.picks.check --row name=home            # check.toggle 은 행 버튼 "check" 로 실행
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```

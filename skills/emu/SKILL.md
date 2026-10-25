@@ -140,7 +140,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   (제목·설명·preview·명령)을 찍고 터미널이면 y/N 을 묻는다 — 에이전트처럼 터미널이 아니면 `--yes` 가 있어야
   실행된다(`--yes` 없이 `--json` 이면 preview 결과만 받아 볼 수 있다). `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
-  form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+  form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움). `--checked <key>,…` 는 `check: true` list 의
+  체크한 행(`{{checked.<col>...}}`·`{{checked.count}}`, list 가 여럿이면 `--checked <list>=<key>,…`).
+  `check.toggle` 이 있는 list 는 `emu run <page>.<list>.check --row <col>=<value>` 로 체크를 바꾼다.
 - `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의
   API 목업. 시나리오를 바꿔 가며 앱이 빈 목록·오류·지연 응답을 받을 때의 화면을 확인한다(재시작 불필요).
   `mock log [--bodies]` 로 앱이 실제로 보낸 요청과 목업 여부를 본다.

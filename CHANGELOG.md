@@ -22,6 +22,12 @@
 - `html` 블록 설정의 `inputs: [...]` 와 블록 자신의 액션(`actions:` 의 `- action: {…}`; 문자열은 지금처럼 툴바 id).
   `POST /api/pages/<page>/frames/<block>/<action>`, `emu run <page>.<block>.<action> --input k=v`. input 은
   `inputs:` 에 적은 이름만 받는다. 실행 응답에 stdout 이 JSON 이면 `data` 를 더한다. 예제 `docs/examples/html-block`.
+- 대시보드 페이지 list 의 여러 행 체크(#47) — `check: true` 로 체크박스 열·전체 선택·개수. 버튼 명령에서
+  `{{checked.<col>...}}`(체크한 행마다 인자 하나), `{{checked.<col>}}`(쉼표로 이은 인자 하나),
+  `{{checked.count}}`, list 가 여럿이면 `{{<list>.checked.…}}`. `confirm:` 의 title·message·preview 에도
+  쓸 수 있다(텍스트에서는 펼치지 않음). `needs: checked` 는 0개일 때 버튼 비활성.
+  `check: {column, toggle}` 로 도구가 체크 상태를 가질 수 있고, `rowActions[].bulk: true` 는 체크한 행마다
+  차례로 돌리는 버튼을 목록 머리에 둔다. `emu run … --checked a,b,c`.
 
 ## [0.14.0] - 2026-10-23
 
