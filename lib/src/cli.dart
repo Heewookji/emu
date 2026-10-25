@@ -25,6 +25,7 @@ import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
 import 'registry.dart';
+import 'report.dart';
 import 'server.dart';
 import 'session.dart';
 import 'temp_device.dart';
@@ -119,6 +120,8 @@ Future<int> runCli(List<String> argv) async {
         return await _hubCmd(rest);
       case 'app':
         return await _appCmd(rest);
+      case 'report':
+        return await _reportCmd(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -3084,6 +3087,264 @@ Future<void> _killOwnDevice(String? deviceId) async {
 }
 
 // --------------------------------------------------------------------------
+// report — a bug/feature/question about emu, as a GitHub issue (report.dart)
+// --------------------------------------------------------------------------
+const _reportUsage = 'usage: emu report <bug|feature|question> "<title>" [-m <text> | --body-file <path|->]\n'
+    '                  [--attach logs[:N]|errors|shot|<file>]... [-y, --yes] [--dry-run] [--json]\n'
+    '       emu report --send <id> [--json]     send a --dry-run draft exactly as shown\n'
+    '       emu report --mine [--json]          the issues you sent with emu report\n'
+    '   Files an issue on github.com/$reportRepo — with `gh issue create` when gh is signed in,\n'
+    '   otherwise by opening a prefilled form in the browser. Shows the whole issue first and\n'
+    '   sends only after y (--yes skips). Paths, project/app names and tokens are masked;\n'
+    '   nothing is attached unless you --attach it. Screenshots are pasted in after.';
+
+Future<int> _reportCmd(List<String> args) async {
+  if (args.contains('--help') || args.contains('-h')) {
+    print(_reportUsage);
+    return 0;
+  }
+  final parser = ArgParser()
+    ..addOption('message', abbr: 'm')
+    ..addOption('body-file')
+    ..addOption('title')
+    ..addMultiOption('attach', splitCommas: false)
+    ..addFlag('yes', abbr: 'y', negatable: false)
+    ..addFlag('dry-run', negatable: false)
+    ..addOption('send')
+    ..addFlag('mine', negatable: false)
+    ..addFlag('json', negatable: false);
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } on FormatException catch (e) {
+    stderr.writeln('✗ ${e.message}');
+    stderr.writeln(_reportUsage);
+    return 2;
+  }
+  final json = res.flag('json');
+  int fail(String msg, [int code = 1]) {
+    json ? print(jsonEncode({'ok': false, 'error': msg})) : stderr.writeln('✗ $msg');
+    return code;
+  }
+
+  final reporter = GitHubReporter();
+  if (res.flag('mine')) return _reportMine(reporter, json: json);
+
+  final BuiltReport built;
+  final drafts = ReportDrafts();
+  final sendId = res.option('send');
+  if (sendId != null) {
+    final draft = drafts.load(sendId);
+    if (draft == null) return fail('no draft $sendId — it was sent already, or is over a day old (run the --dry-run again)');
+    built = draft;
+  } else {
+    final interactive = !json && stdin.hasTerminal;
+    var kindArg = res.rest.isNotEmpty ? res.rest[0] : null;
+    var title = res.option('title') ?? (res.rest.length > 1 ? res.rest.sublist(1).join(' ') : null);
+    if (kindArg == null && interactive) {
+      stdout.write('kind [bug/feature/question]: ');
+      kindArg = stdin.readLineSync()?.trim();
+    }
+    final kind = ReportKind.parse(kindArg);
+    if (kind == null) return fail('the first argument is the kind: bug, feature or question\n$_reportUsage', 2);
+    if ((title == null || title.trim().isEmpty) && interactive) {
+      stdout.write('title: ');
+      title = stdin.readLineSync()?.trim();
+    }
+    if (title == null || title.trim().isEmpty) return fail('a title is required\n$_reportUsage', 2);
+    var body = res.option('message') ?? '';
+    final bodyFile = res.option('body-file');
+    if (bodyFile == '-') {
+      body = await stdin.transform(utf8.decoder).join();
+    } else if (bodyFile != null) {
+      if (!File(bodyFile).existsSync()) return fail('no such file: $bodyFile', 2);
+      body = File(bodyFile).readAsStringSync();
+    } else if (res.option('message') == null && interactive) {
+      print('describe it (what you did, what happened, what you expected) — end with an empty line:');
+      final lines = <String>[];
+      while (true) {
+        final line = stdin.readLineSync();
+        if (line == null || line.isEmpty) break;
+        lines.add(line);
+      }
+      body = lines.join('\n');
+    }
+
+    final session = Session.find();
+    final info = session?.readServerInfo();
+    final live = info != null && await _ping(info);
+    final attachments = <ReportAttachment>[];
+    List<LogEntry>? entries;
+    List<LogEntry> logEntries() => entries ??= [
+          if (session != null && session.logFile.existsSync())
+            for (final line in session.logFile.readAsLinesSync())
+              if (line.trim().isNotEmpty) ?_tryLogEntry(line),
+        ];
+    for (final a in res.multiOption('attach')) {
+      final m = RegExp(r'^logs(?::(\d+))?$').firstMatch(a);
+      if (m != null) {
+        if (session == null) return fail('--attach logs: not in a Flutter project');
+        attachments.add(logsAttachment(logEntries(), (int.tryParse(m.group(1) ?? '') ?? 200).clamp(1, 2000)));
+      } else if (a == 'errors') {
+        if (session == null) return fail('--attach errors: not in a Flutter project');
+        attachments.add(errorsAttachment(logEntries()) ?? ReportAttachment.text('errors', '(no exceptions in the log)'));
+      } else if (a == 'shot') {
+        if (!live) return fail('--attach shot needs a running session (`emu up`)');
+        final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+        final r = await _post(info, '/api/screenshot?path=${Uri.encodeQueryComponent('.emu/report-shot-$ts.png')}');
+        if (r?['ok'] != true) return fail('--attach shot: ${r?['error'] ?? 'no response from the server'}');
+        attachments.add(ReportAttachment.image('screenshot', '${r!['path']}'));
+      } else if (File(a).existsSync()) {
+        if (RegExp(r'\.(png|jpe?g|gif)$', caseSensitive: false).hasMatch(a)) {
+          attachments.add(ReportAttachment.image(a.split('/').last, File(a).absolute.path));
+        } else {
+          final f = File(a);
+          if (f.lengthSync() > 512 * 1024) return fail('--attach $a: over 512KB — attach part of it');
+          try {
+            attachments.add(ReportAttachment.text(a.split('/').last, f.readAsStringSync()));
+          } on FileSystemException {
+            return fail('--attach $a: not a text file');
+          }
+        }
+      } else {
+        return fail('--attach $a: use logs[:N], errors, shot or a file path', 2);
+      }
+    }
+
+    String? device, appState;
+    if (live) {
+      // The server's view (it asks `flutter devices` once per device, which takes a few seconds).
+      try {
+        final r = await http
+            .get(Uri.parse('${info.baseUrl}/api/report/session'), headers: info.headers)
+            .timeout(const Duration(seconds: 30));
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        device = j['device'] as String?;
+        appState = j['appState'] as String?;
+      } catch (_) {}
+    }
+    final root = session?.projectRoot.path;
+    final scrub = Scrubber.forProject(root, appIds: [
+      if (root != null)
+        for (final platform in ['android', 'ios']) ?builtAppId(root, platform),
+    ]);
+    try {
+      built = buildReport(
+        ReportDraft(kind: kind, title: title, body: body, attachments: attachments),
+        await collectEnvironment(device: device, appState: appState, from: 'cli'),
+        scrub,
+      );
+    } on FormatException catch (e) {
+      return fail(e.message, 2);
+    }
+  }
+
+  final gh = await reporter.ghReady();
+  final labeled = gh && (await reporter.repoLabels()).contains(built.kind.label);
+  if (res.flag('dry-run')) {
+    final id = drafts.save(built);
+    if (json) {
+      print(jsonEncode({'ok': true, 'draft': id, 'via': gh ? 'gh' : 'browser', 'labeled': labeled, ...built.toJson()}));
+    } else {
+      _printReport(built, gh: gh, labeled: labeled);
+      print('draft $id — send exactly this with: emu report --send $id');
+    }
+    return 0;
+  }
+  // `--send <id>` is itself the answer: that draft was shown by --dry-run.
+  if (!res.flag('yes') && sendId == null) {
+    if (json || !stdin.hasTerminal) return fail('add --yes to send without asking (or --dry-run to only preview)', 2);
+    _printReport(built, gh: gh, labeled: labeled);
+    stdout.write(gh ? 'Send this issue? [y/N] ' : 'Open it in the browser to submit? [y/N] ');
+    final answer = stdin.readLineSync()?.trim().toLowerCase();
+    if (answer != 'y' && answer != 'yes') {
+      print('cancelled — nothing was sent');
+      return 0;
+    }
+  }
+
+  final result = await reporter.send(built, useGh: gh);
+  if (!result.ok) return fail(result.error!);
+  if (sendId != null) drafts.remove(sendId);
+  var copiedBody = false;
+  if (result.via == 'browser' && reporter.newIssueUrl(built).trimmed) copiedBody = await copyTextToClipboard(built.body);
+  var copiedImage = false;
+  if (built.images.isNotEmpty && result.via == 'gh') copiedImage = await copyImageToClipboard(built.images.first);
+  if (json) {
+    print(jsonEncode({...result.toJson(), 'images': built.images, if (copiedImage) 'imageCopied': true}));
+  } else if (result.via == 'browser') {
+    print('» opening the prefilled issue form — submit it there (gh is not signed in to github.com)');
+    if (copiedBody) print('  the attachments did not fit in a link: the full body is on the clipboard — paste it over');
+  } else {
+    print(result.duplicate
+        ? '! already sent a moment ago — #${result.number} ${result.url}'
+        : '✓ sent — #${result.number} ${result.url}${result.labeled ? '  [${built.kind.label}]' : ''}');
+  }
+  if (built.images.isNotEmpty && !json) {
+    print(copiedImage
+        ? '  the screenshot is on the clipboard — paste it (⌘V) into a comment on the issue'
+        : '  add the screenshot by dragging it into a comment on the issue:');
+    for (final i in built.images.skip(copiedImage ? 1 : 0)) {
+      print('    $i');
+    }
+  }
+  final open = result.via == 'browser' || built.images.isNotEmpty;
+  if (open && result.url != null && !json) await _openUrl(result.url!);
+  return 0;
+}
+
+LogEntry? _tryLogEntry(String line) {
+  try {
+    return LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _printReport(BuiltReport r, {required bool gh, required bool labeled}) {
+  final rule = '─' * 60;
+  print('to:     github.com/$reportRepo  (${gh ? 'gh issue create' : 'browser — gh is not signed in to github.com'})');
+  print('title:  ${r.title}');
+  print('label:  ${labeled ? r.kind.label : '(none${gh ? ' — the repo has no "${r.kind.label}" label' : ''})'}');
+  print(rule);
+  print(r.body.trimRight());
+  print(rule);
+  for (final i in r.images) {
+    print('+ screenshot, pasted in after: $i');
+  }
+  for (final n in r.notes) {
+    print('! $n');
+  }
+}
+
+Future<int> _reportMine(GitHubReporter reporter, {required bool json}) async {
+  final issues = await reporter.ghReady() ? await reporter.mine() : null;
+  if (issues == null) {
+    if (json) {
+      print(jsonEncode({'ok': true, 'via': 'browser', 'url': myIssuesUrl}));
+    } else {
+      print('gh is not signed in to github.com — your issues: $myIssuesUrl');
+      await _openUrl(myIssuesUrl);
+    }
+    return 0;
+  }
+  if (json) {
+    print(jsonEncode({'ok': true, 'via': 'gh', 'issues': issues}));
+    return 0;
+  }
+  if (issues.isEmpty) print('(no issues sent with emu report yet)');
+  for (final i in issues) {
+    final prs = (i['prs'] as List).map((p) => '#${(p as Map)['number']}').join(', ');
+    final comments = i['comments'] as int;
+    print('#${i['number']}  [${i['status']}]  ${i['title']}'
+        '${comments > 0 ? '  ($comments comment${comments == 1 ? '' : 's'})' : ''}'
+        '${prs.isEmpty ? '' : '  PR $prs'}');
+    print('      ${i['url']}');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
 ServerInfo _requireServer() {
@@ -3392,6 +3653,13 @@ COMMANDS
   hub [--no-open] [--stop]
                          One page for every session: a drawer of sessions, the
                          picked one's dashboard beside it (http://127.0.0.1:4576)
+  report <bug|feature|question> "<title>" [-m <text>] [--attach logs[:N]|errors|shot|<file>]...
+                         Report a bug/idea/question about emu as a GitHub issue:
+                         shows the whole issue (paths, names, tokens masked) and
+                         sends after y (gh, else a prefilled browser form)
+     -y, --yes             send without asking
+     --dry-run             only show it (and keep it as a draft: --send <id>)
+     --mine                the issues you sent with emu report, and their status
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)
