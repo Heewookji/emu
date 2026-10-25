@@ -36,13 +36,15 @@ void main() {
       expect(toggle.then, Then.reload);
       final sync = page.item('sync') as PageAction;
       expect(sync.label, 'sync'); // defaults to the id
-      expect(sync.confirm, isFalse);
+      expect(sync.confirm, isNull);
       expect(sync.timeout, defaultTimeout);
       final publish = page.item('publish') as PageAction;
       expect(publish.run!.shell, 'tool/publish.sh --all');
       expect(publish.run!.invocation.$1, 'sh');
       expect(publish.run!.invocation.$2, ['-c', 'tool/publish.sh --all']);
-      expect(publish.confirm, isTrue);
+      expect(publish.confirm, isNotNull);
+      expect(publish.confirm!.danger, isFalse);
+      expect(publish.toJson()['confirm'], isTrue);
       expect(publish.timeout, const Duration(seconds: 300));
       expect(page.blocks.single, isA<OutputBlock>().having((b) => b.id, 'id', 'output'));
     });
@@ -386,5 +388,76 @@ void main() {
       expect(parseToggleState('{"on": "yes"}'), isNull);
       expect(parseToggleState('[true]'), isNull);
     });
+  });
+
+  group('confirm', () {
+    PagesConfig parse(Object? confirm, {List<Map<String, dynamic>> blocks = const []}) => parsePages([
+          {
+            'id': 'p',
+            'toolbar': [
+              {'action': {'id': 'a', 'label': 'stage 배포', 'run': ['./tool/t', 'deploy'], 'confirm': confirm}},
+            ],
+            'blocks': blocks,
+          },
+        ]);
+    ConfirmSpec? spec(PagesConfig c) => (c.page('p')!.item('a') as PageAction?)?.confirm;
+
+    test('true, false, a message, or a map', () {
+      expect(spec(parse(false)), isNull);
+      expect(spec(parse(null)), isNull);
+      final plain = spec(parse(true))!;
+      expect([plain.title, plain.message, plain.button, plain.preview], everyElement(isNull));
+      expect(plain.danger, isFalse);
+      expect(spec(parse('stage 에 push 합니다'))!.message, 'stage 에 push 합니다');
+
+      final c = parse({
+        'title': '배포 저장소 stage 브랜치에 push 할까요?',
+        'message': '{{selected.name}} 을 stage 에 push 합니다.',
+        'danger': true,
+        'button': 'push',
+        'preview': ['./tool/t', 'deploy', '--dry-run', '{{selected.name}}'],
+        'allowOnPreviewError': true,
+      }, blocks: [
+        {'list': {'id': 'items', 'run': ['./tool/t', 'list']}},
+      ]);
+      expect(c.problems, isEmpty);
+      final s = spec(c)!;
+      expect(s.title, '배포 저장소 stage 브랜치에 push 할까요?');
+      expect(s.danger, isTrue);
+      expect(s.button, 'push');
+      expect(s.preview!.argv, ['./tool/t', 'deploy', '--dry-run', '{{selected.name}}']);
+      expect(s.allowOnPreviewError, isTrue);
+      final action = c.page('p')!.item('a') as PageAction;
+      // The message and the preview read the selection too, so the button waits for a pick.
+      expect(action.placeholders, {'selected.name'});
+      expect(action.toJson(), containsPair('danger', true));
+      expect(action.toJson(), containsPair('preview', "./tool/t deploy --dry-run '{{selected.name}}'"));
+    });
+
+    test('a wrong key, type or placeholder is a problem and hides that action', () {
+      for (final (confirm, problem) in [
+        ({'titel': 'x'}, 'p.a.confirm: unknown "titel"'),
+        ({'danger': 'yes'}, 'p.a.confirm.danger: expected true or false'),
+        ({'message': ['x']}, 'p.a.confirm.message: expected text'),
+        ({'message': '{{row.id}}'}, "p.a.confirm.message: {{row.*}} only works in a list's rowActions"),
+        ({'title': '{{nope}}'}, 'p.a.confirm.title: unknown placeholder {{nope}}'),
+        ({'button': '{{selected.x}}'}, 'p.a.confirm.button: placeholders work only in title and message'),
+        ({'preview': 'sh {{selected.x}}'}, 'p.a.confirm.preview: placeholders work only in the [program, arg, …] form'),
+        ({'preview': 3}, 'p.a.confirm.preview: expected [program, arg, …] or a shell string'),
+        (3, 'p.a.confirm: expected true, a message, or a map'),
+      ]) {
+        final c = parse(confirm);
+        expect(c.problems, [startsWith(problem)], reason: '$confirm');
+        expect(c.page('p')!.toolbar, isEmpty, reason: '$confirm');
+      }
+    });
+  });
+
+  test('looksLikePatch', () {
+    expect(looksLikePatch('diff --git a/x b/x\n'), isTrue);
+    expect(looksLikePatch('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n'), isTrue);
+    expect(looksLikePatch('3 templates\n@@ -1,2 +1,2 @@\n'), isTrue);
+    expect(looksLikePatch('--- done ---\nok'), isFalse);
+    expect(looksLikePatch('[{"name": "a"}]'), isFalse);
   });
 }

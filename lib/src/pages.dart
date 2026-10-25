@@ -131,10 +131,47 @@ sealed class ToolbarItem {
   Map<String, dynamic> toJson();
 }
 
+/// How an action asks first (`confirm:`): `true`, a message, or a map of
+/// these. Whatever it says, the dialog also shows the exact command — what
+/// it shows is what runs.
+class ConfirmSpec {
+  const ConfirmSpec({this.title, this.message, this.danger = false, this.button, this.preview, this.allowOnPreviewError = false});
+
+  /// null: `Run “<label>”?`.
+  final String? title;
+
+  /// Text under the title; may hold placeholders, filled as plain text.
+  final String? message;
+
+  /// Hard to undo: the Run button stands out, and Enter alone doesn't run it.
+  final bool danger;
+
+  /// The Run button's text; null: `Run`.
+  final String? button;
+
+  /// Runs before the dialog opens; its stdout shows in the dialog, and a
+  /// failure keeps Run disabled unless [allowOnPreviewError].
+  final PageCommand? preview;
+  final bool allowOnPreviewError;
+
+  /// The placeholders used, as in [PageCommand.placeholders].
+  Set<String> get placeholders => {
+        for (final text in [?title, ?message])
+          for (final m in _placeholder.allMatches(text)) PageCommand._key(m),
+        ...?preview?.placeholders,
+      };
+
+  /// [text] with its placeholders filled from [vars], as plain text. Throws
+  /// [MissingValue] like [PageCommand.fill].
+  static String fillText(String text, Map<String, String> vars) => text.replaceAllMapped(
+      _placeholder, (m) => vars[PageCommand._key(m)] ?? (throw MissingValue(PageCommand._key(m))));
+}
+
 /// Runs [run] when pressed — a toolbar button, a button on each row of a list
 /// (`rowActions`) or under a form. Instead of a command it may open
 /// [openUrl] on the device, the way `emu open-url` does. With [confirm], the
-/// dashboard shows what will run and asks first, and `emu run` needs `--yes`.
+/// dashboard shows what will run and asks first, and `emu run` asks too (or
+/// takes `--yes`).
 class PageAction extends ToolbarItem {
   const PageAction({
     required super.id,
@@ -143,7 +180,7 @@ class PageAction extends ToolbarItem {
     this.openUrl,
     super.then = Then.none,
     super.timeout = defaultTimeout,
-    this.confirm = false,
+    this.confirm,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -151,12 +188,14 @@ class PageAction extends ToolbarItem {
   /// The deep link to open, as a one-argument command (so placeholders fill
   /// the same way).
   final PageCommand? openUrl;
-  final bool confirm;
+
+  /// null: runs without asking.
+  final ConfirmSpec? confirm;
 
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
 
-  Set<String> get placeholders => (run ?? openUrl)!.placeholders;
+  Set<String> get placeholders => {...(run ?? openUrl)!.placeholders, ...?confirm?.placeholders};
 
   @override
   Map<String, dynamic> toJson() => {
@@ -167,7 +206,9 @@ class PageAction extends ToolbarItem {
         if (openUrl != null) 'openUrl': openUrl!.argv!.single,
         'uses': placeholders.toList(),
         'then': then.name,
-        'confirm': confirm,
+        'confirm': confirm != null,
+        if (confirm?.danger == true) 'danger': true,
+        'preview': ?confirm?.preview?.display,
       };
 }
 
@@ -590,7 +631,8 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
-  final confirm = m['confirm'] == true;
+  final (confirm, confirmOk) = _confirm(m['confirm'], '$where.confirm', allowed, problems);
+  if (!confirmOk) return null;
   if (m['openUrl'] != null) {
     if (m['run'] != null) {
       problems.add('$where: give run or openUrl, not both');
@@ -612,6 +654,61 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
   return PageAction(id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm);
+}
+
+const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowOnPreviewError'};
+
+/// `confirm:` → (spec, ok): `true`, a message, or a map of [_confirmKeys].
+(ConfirmSpec?, bool) _confirm(Object? v, String at, _Allowed allowed, List<String> problems) {
+  if (v == null || v == false) return (null, true);
+  if (v == true) return (const ConfirmSpec(), true);
+  if (v is String) {
+    if (!_textPlaceholders(v, at, allowed, problems)) return (null, false);
+    return (ConfirmSpec(message: v.trim().isEmpty ? null : v), true);
+  }
+  if (v is! Map) {
+    problems.add('$at: expected true, a message, or a map with ${_confirmKeys.join(', ')}');
+    return (null, false);
+  }
+  final unknown = v.keys.where((k) => !_confirmKeys.contains(k)).toList();
+  if (unknown.isNotEmpty) {
+    problems.add('$at: unknown ${unknown.map((k) => '"$k"').join(', ')} (${_confirmKeys.join(', ')})');
+    return (null, false);
+  }
+  for (final key in const ['title', 'message', 'button']) {
+    if (v[key] != null && v[key] is! String && v[key] is! num) {
+      problems.add('$at.$key: expected text');
+      return (null, false);
+    }
+  }
+  for (final key in const ['danger', 'allowOnPreviewError']) {
+    if (v[key] != null && v[key] is! bool) {
+      problems.add('$at.$key: expected true or false');
+      return (null, false);
+    }
+  }
+  String? text(String key) => v[key] == null || '${v[key]}'.trim().isEmpty ? null : '${v[key]}';
+  final title = text('title'), message = text('message'), button = text('button');
+  for (final (key, t) in [('title', title), ('message', message)]) {
+    if (t != null && !_textPlaceholders(t, '$at.$key', allowed, problems)) return (null, false);
+  }
+  if (button != null && button.contains('{{')) {
+    problems.add('$at.button: placeholders work only in title and message');
+    return (null, false);
+  }
+  final preview = v['preview'] == null ? null : _command(v['preview'], '$at.preview', allowed, problems);
+  if (v['preview'] != null && preview == null) return (null, false);
+  return (
+    ConfirmSpec(
+      title: title,
+      message: message,
+      danger: v['danger'] == true,
+      button: button,
+      preview: preview,
+      allowOnPreviewError: v['allowOnPreviewError'] == true,
+    ),
+    true
+  );
 }
 
 /// label, then, timeout — shared by actions, toggles and row actions.
@@ -795,34 +892,41 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
     return null;
   }
   for (final arg in command.argv ?? const <String>[]) {
-    for (final m in _braces.allMatches(arg)) {
-      final p = _placeholder.matchAsPrefix(m.group(0)!);
-      final kind = p?.group(1);
-      final name = p?.group(2);
-      final hasName = name != null;
-      final unknown = 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg, input.<field>)';
-      final String? why = switch (kind) {
-        null => unknown,
-        'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
-        'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
-        'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
-        'seg' when hasName => '{{seg}} takes no column',
-        'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
-        'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
-        'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
-        'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
-        'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
-        'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
-        'selected' || 'row' || 'seg' || 'input' => null,
-        _ => unknown,
-      };
-      if (why != null) {
-        problems.add('$at: $why');
-        return null;
-      }
-    }
+    if (!_textPlaceholders(arg, at, allowed, problems)) return null;
   }
   return command;
+}
+
+/// Whether every `{{…}}` in [text] is a placeholder [allowed] here; adds the
+/// first that isn't to [problems].
+bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> problems) {
+  for (final m in _braces.allMatches(text)) {
+    final p = _placeholder.matchAsPrefix(m.group(0)!);
+    final kind = p?.group(1);
+    final name = p?.group(2);
+    final hasName = name != null;
+    final unknown = 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg, input.<field>)';
+    final String? why = switch (kind) {
+      null => unknown,
+      'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
+      'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
+      'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
+      'seg' when hasName => '{{seg}} takes no column',
+      'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
+      'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
+      'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
+      'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
+      'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
+      'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
+      'selected' || 'row' || 'seg' || 'input' => null,
+      _ => unknown,
+    };
+    if (why != null) {
+      problems.add('$at: $why');
+      return false;
+    }
+  }
+  return true;
 }
 
 List<String>? _strings(Object? v) => v is List && v.every((e) => e is String) ? v.cast<String>() : null;

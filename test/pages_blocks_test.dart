@@ -22,6 +22,13 @@ pages:
           rowActions:
             - action: { id: check, run: [./tool/t.sh, args, check, "{{row.name}}"] }
             - action: { id: go, openUrl: "myapp://item?name={{row.name}}" }
+            - action:
+                id: drop
+                run: [./tool/t.sh, args, drop, "{{row.name}}"]
+                confirm:
+                  title: "drop {{row.name}}?"
+                  message: "<b>{{row.name}}</b> (local: {{row.local}}) goes"
+                  preview: [./tool/t.sh, diff, "{{row.name}}", base]
           watch: [templates/**]
       - form:
           id: link
@@ -175,6 +182,22 @@ void main() {
       'confirmed': true,
     });
     expect(j['output'], '[publish]\n[home banner]\n');
+  });
+
+  test("a row button's confirm fills its words and preview from the row, as text", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/rows/items/drop', {'row': {'name': 'card'}});
+    expect(code, 400); // the message reads a column the command doesn't
+    expect(j['needs'], 'row');
+
+    (code, j) = await call('POST', '/api/pages/tpl/rows/items/drop', {
+      'row': {'name': 'card', 'local': false},
+    });
+    expect(code, 428);
+    expect(j['command'], './tool/t.sh args drop card');
+    expect(j['confirm']['title'], 'drop card?');
+    expect(j['confirm']['message'], '<b>card</b> (local: false) goes'); // the dashboard sets it as text
+    expect(j['preview']['command'], './tool/t.sh diff card base');
+    expect(j['preview']['patch'], contains('+new base'));
   });
 
   test('unknown blocks and row actions say what exists', () async {

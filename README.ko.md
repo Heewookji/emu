@@ -773,7 +773,7 @@ pages:
 | `toolbar` | `action`(버튼)과 `toggle`(스위치) |
 | `run` / `state` / `on` / `off` | 명령. `[program, arg, …]` 은 직접 실행, 문자열은 `sh -c`. 상대 경로 프로그램(`./tool/x`)은 프로젝트 루트 기준 |
 | `then` | 명령이 성공하면 `reload` 또는 `restart`(기본 `none`) |
-| `confirm` | 대시보드가 실행할 명령을 그대로 보여 주고 묻는다. `emu run` 은 `--yes` 필요 |
+| `confirm` | 먼저 묻는다: `true`, 문자열, 또는 맵(아래). 확인 창은 실행할 명령을 늘 그대로 보여 준다. `emu run` 은 터미널에서 y/N 을 묻고, `--yes` 면 건너뛴다 |
 | `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
 | `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기 |
 
@@ -794,6 +794,36 @@ pages:
 - chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
 - `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
   보여 준다.
+- `confirm:` 으로 이 액션이 무엇을 하는지 말하고, 실행 전에 무엇이 바뀌는지 미리 보여 줄 수 있다:
+
+  ```yaml
+  - action:
+      id: stage
+      label: stage 배포
+      run: [./tool/deploy, --env, stage, "{{selected.name}}"]
+      confirm:
+        title: 배포 저장소 stage 브랜치에 push 할까요?
+        message: "{{selected.name}} 을 배포 저장소의 stage 브랜치에 바로 push 합니다."
+        danger: true            # Run 버튼을 빨간색으로, 포커스는 Cancel — Enter 만으로는 실행 안 됨
+        button: push            # Run 버튼 글자
+        preview: [./tool/deploy, --env, stage, --dry-run, "{{selected.name}}"]
+  ```
+
+  | 키 | 뜻 | 기본 |
+  |----|----|------|
+  | (문자열) | `confirm: "…"` 는 `message` 만 준 것 | — |
+  | `title` | 확인 창 제목 | `Run “<label>”?` |
+  | `message` | 제목 아래 설명 | 없음 |
+  | `danger` | 되돌리기 어려운 작업: Run 버튼이 빨간색, 포커스는 Cancel | `false` |
+  | `button` | Run 버튼 글자 | `Run` |
+  | `preview` | 확인 창을 열기 전에 돌리는 명령. stdout 을 확인 창에 보여 준다 | 없음 |
+  | `allowOnPreviewError` | preview 가 실패해도 Run 을 허용 | `false` |
+
+  `title`·`message` 에는 명령과 같은 자리표시자를 쓸 수 있고, HTML 이 아닌 텍스트로만 들어간다. 실행할
+  명령은 설명 아래 접힌 채로 늘 확인 창에 있다 — 확인 창에 보이는 것이 실제로 실행되는 것이다. preview
+  출력이 unified diff 면 diff 블록처럼, 객체의 JSON 배열이면 표로, 아니면 텍스트로 보인다. preview 가
+  실패하면(0 이 아닌 종료, 시간 초과) 그 출력을 보여 주고 Run 을 막는다. 모르는 키나 잘못된 타입은 설정
+  문제로 `emu pages` 에 나온다.
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
   작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
 - 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
@@ -863,7 +893,7 @@ emu pages                          # 페이지·항목·블록 목록(--json 가
 emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
 emu run templates.local on         # 토글은 on/off
 emu run templates.local            # on/off 없이 주면 현재 상태
-emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
+emu run templates.publish --select name=home_banner         # confirm: 확인 창 내용·preview 를 찍고 y/N (--yes 면 건너뜀)
 emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
 emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
 emu block templates.items          # list 가 보여 주는 것을 표로

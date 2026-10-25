@@ -187,8 +187,9 @@ async function refreshToggles(page) {
   if (currentPage() === page) renderPageBar(page);
 }
 
-// Run a toolbar item or row button. An item marked confirm: true answers 428
-// with the exact command (values filled in); that is what the dialog shows.
+// Run a toolbar item or row button. An item marked confirm: answers 428 with
+// the exact command (values filled in), the dialog's words and the preview
+// output; that is what the dialog shows.
 async function runItem(page, item, key, url, body) {
   if (pageState.running.has(key)) return;
   pageState.running.add(key);
@@ -200,7 +201,7 @@ async function runItem(page, item, key, url, body) {
     if (r.status === 428 && j.needsConfirm) {
       pageState.running.delete(key);
       renderRunning(page);
-      if (!(await confirmRun(item, j.command))) return;
+      if (!(await confirmRun(item, j))) return;
       pageState.running.add(key);
       renderRunning(page);
       r = await post({ ...body, confirmed: true });
@@ -555,11 +556,15 @@ function renderDiffView(page, block) {
   el.querySelector('[data-plus]').textContent = files.length ? `+${added}` : '';
   el.querySelector('[data-minus]').textContent = files.length ? `−${deleted}` : '';
   const top = view.scrollTop;
-  view.innerHTML = files.length
+  view.innerHTML = patchFilesHtml(files);
+  view.scrollTop = top; // a refresh of the same diff keeps the reader's place
+}
+
+function patchFilesHtml(files) {
+  return files.length
     ? files.map(f => (f.path ? `<div class="dfile-head"><span class="path">${escapeHtml(f.path)}</span>`
         + `<span class="plus">+${f.added}</span><span class="minus">−${f.deleted}</span></div>` : '') + renderPatch(f.patch)).join('')
     : '<div class="diff-note">no differences</div>';
-  view.scrollTop = top; // a refresh of the same diff keeps the reader's place
 }
 
 // A multi-file unified diff → one entry per file (path from its +++/--- line).
@@ -730,15 +735,58 @@ function outputHtml(page) {
     + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
 }
 
+// The confirm dialog. Its words come from emu.yaml (`confirm:`), filled as
+// text; the command it runs is always there, folded under them. A danger
+// action keeps focus on Cancel, so Enter alone doesn't run it; a failed
+// preview disables Run unless the action allows it.
 let confirmResolve = null;
-function confirmRun(item, command) {
-  document.getElementById('confirm-title').textContent = `Run “${item.label}”?`;
-  document.getElementById('confirm-cmd').textContent = `$ ${command}`;
+function confirmRun(item, res) {
+  const c = res.confirm || {};
+  const pv = res.preview;
+  const msg = document.getElementById('confirm-msg');
+  const run = document.getElementById('confirm-run');
+  pageEls.confirm.classList.toggle('danger', !!c.danger);
+  pageEls.confirm.classList.toggle('wide', !!pv);
+  document.getElementById('confirm-title').textContent = c.title || `Run “${item.label}”?`;
+  msg.textContent = c.message || '';
+  msg.hidden = !c.message;
+  document.getElementById('confirm-cmd').textContent = `$ ${res.command}`;
+  document.getElementById('confirm-cmd-line').textContent = `$ ${res.command}`;
+  // Nothing else to read: show the command unfolded, as before.
+  document.getElementById('confirm-cmd-box').open = !c.message && !pv;
+  renderConfirmPreview(pv);
   document.getElementById('confirm-then').textContent =
     item.then !== 'none' ? `then: hot ${item.then} when it succeeds` : '';
+  run.textContent = c.button || 'Run';
+  run.disabled = !!pv?.blocks;
+  run.title = pv?.blocks ? 'the preview failed' : '';
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = false;
-  document.getElementById('confirm-run').focus();
+  (c.danger || run.disabled ? document.getElementById('confirm-cancel') : run).focus();
   return new Promise((resolve) => { confirmResolve = resolve; });
+}
+
+// A preview's output: a diff like the Changes tab, JSON rows as a table, or text.
+function renderConfirmPreview(pv) {
+  const host = document.getElementById('confirm-preview');
+  host.hidden = !pv;
+  host.classList.toggle('failed', !!pv && !pv.ok);
+  if (!pv) { host.innerHTML = ''; return; }
+  const status = pv.ok ? '' : `<span class="fail-mark">✗ preview ${escapeHtml(pv.error || 'failed')}</span>`;
+  let body;
+  if (pv.ok && pv.kind === 'diff') {
+    body = `<section class="diff-view pv-body">${patchFilesHtml(splitPatch(pv.patch || ''))}</section>`;
+  } else if (pv.ok && pv.kind === 'table') {
+    const cols = Object.keys(pv.rows[0] || {});
+    body = `<div class="pv-body"><table class="lst"><thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead><tbody>`
+      + pv.rows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(cellText(r[c]))}</td>`).join('')}</tr>`).join('')
+      + '</tbody></table>'
+      + (pv.truncated ? `<div class="ext-empty">first ${pv.rows.length} of ${pv.truncated} rows</div>` : '') + '</div>';
+  } else {
+    const text = stripAnsi(pv.text || '').trimEnd();
+    body = `<pre class="pv-body">${escapeHtml(text) || '<span class="muted">(no output)</span>'}</pre>`;
+  }
+  host.innerHTML = `<div class="pv-head"><span class="muted">preview</span><span class="cmd" title="${escapeHtml(pv.command)}">$ ${escapeHtml(pv.command)}</span>${status}</div>`
+    + body + (pv.ok || pv.blocks === false ? '' : '<div class="fail-mark">Run is off until the preview succeeds.</div>');
 }
 function closeConfirm(ok) {
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;

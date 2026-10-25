@@ -10,6 +10,9 @@
 /// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 ///
 /// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}, "input": {…}}`;
+/// an unconfirmed run of a `confirm:` action answers 428 with the dialog —
+/// `command`, `confirm: {title, message?, danger, button}` and the `preview`
+/// output, if it has one — and runs nothing but that preview.
 /// GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
 /// placeholders of commands from the config.
 ///
@@ -137,6 +140,12 @@ List<Map<String, dynamic>>? parseListRows(String stdout) {
   }
   return null;
 }
+
+final _patchStart = RegExp(r'^(diff --git |--- \S.*\n\+\+\+ |@@ -\d)', multiLine: true);
+
+/// Whether [text] reads as a unified diff (`diff --git`, a `---`/`+++` pair
+/// or a hunk header at a line start).
+bool looksLikePatch(String text) => _patchStart.hasMatch(text);
 
 /// Placeholder values carried by a request: `selected`/`row`/`input` maps and
 /// `seg` in a JSON body, or `selected.<col>=…`/`seg=…` in a query.
@@ -308,12 +317,25 @@ class PagesApi {
     final url = item is PageAction && item.openUrl != null ? command.argv!.single.trim() : null;
     if (url != null && url.isEmpty) return _json({'ok': false, 'needs': 'input', 'error': '$key: the URL is empty'}, status: 400);
     final display = url != null ? 'open-url $url' : command.display;
-    if (item is PageAction && item.confirm && !confirmed) {
+    final confirm = item is PageAction ? item.confirm : null;
+    if (confirm != null && !confirmed) {
+      final String? message;
+      final String title;
+      final PageCommand? preview;
+      try {
+        title = ConfirmSpec.fillText(confirm.title ?? 'Run “${item.label}”?', vars);
+        message = confirm.message == null ? null : ConfirmSpec.fillText(confirm.message!, vars);
+        preview = confirm.preview?.fill(vars);
+      } on MissingValue catch (e) {
+        return _json(_needs(key, e), status: 400);
+      }
       // The exact command, values filled in: what the dialog shows is what runs.
       return _json({
         'ok': false,
         'needsConfirm': true,
         'command': display,
+        'confirm': {'title': title, 'message': ?message, 'danger': confirm.danger, 'button': confirm.button ?? 'Run'},
+        if (preview != null) 'preview': await _preview(page, itemId, preview, item.timeout, confirm.allowOnPreviewError),
         'error': '$key asks for confirmation first — it runs: $display',
       }, status: 428);
     }
@@ -334,6 +356,31 @@ class PagesApi {
     _logResult(key, run);
     broadcast({'type': 'ext', 'event': 'finished', 'page': page.id, 'item': itemId, 'run': run.toJson()});
     return _json(run.toJson());
+  }
+
+  /// A confirm dialog's `preview:` output, read the way blocks read theirs:
+  /// a unified diff as `patch`, a JSON array of objects as `rows`, anything
+  /// else as `text`. A failed preview `blocks` Run unless [allowError].
+  Future<Map<String, dynamic>> _preview(
+      DashboardPage page, String itemId, PageCommand command, Duration timeout, bool allowError) async {
+    final run = await execute(page.id, itemId, command, timeout);
+    final base = {'command': command.display, 'ms': run.elapsed.inMilliseconds};
+    if (!run.commandOk) {
+      return {'ok': false, ...base, 'error': run.error, 'text': run.output, 'blocks': !allowError};
+    }
+    final out = run.stdout;
+    if (looksLikePatch(out)) return {'ok': true, ...base, 'kind': 'diff', 'patch': out};
+    final rows = out.trim().startsWith('[') ? parseListRows(out) : null;
+    if (rows != null && rows.isNotEmpty) {
+      return {
+        'ok': true,
+        ...base,
+        'kind': 'table',
+        'rows': rows.length > _rowLimit ? rows.sublist(0, _rowLimit) : rows,
+        if (rows.length > _rowLimit) 'truncated': rows.length,
+      };
+    }
+    return {'ok': true, ...base, 'kind': 'text', 'text': out};
   }
 
   Map<String, dynamic> _needs(String key, MissingValue e) => {
