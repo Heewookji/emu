@@ -14,6 +14,14 @@
   (Run 강조, 포커스는 Cancel)·`button`·`preview`(확인 창 전에 돌리는 명령: diff·표·텍스트로 보이고, 실패하면
   Run 을 막음, `allowOnPreviewError` 로 해제). 실행할 명령은 늘 접힌 채 보인다. 서버 428 응답에 `confirm`·
   `preview` 가 붙고, `emu run` 은 터미널에서 같은 내용을 찍고 y/N 을 묻는다(`--yes` 는 그대로 건너뜀).
+- 커스텀 화면(`html` 블록)용 대시보드 인터페이스 1단계 (#49). 대시보드가 frame 에 `window.emu` 도우미를 넣는다:
+  `emu.onData`·`emu.run(id, {input})`(결과 `{ok, exitCode, error, output, data}` 를 돌려받음)·`emu.confirm`·
+  `emu.prompt`·`emu.toast`. 확인·입력 창은 대시보드가 frame 바깥에 출처(블록 제목·`src`)와 함께 텍스트로만
+  그리고, 한 번에 한 창·보이는 페이지의 frame 만 받으며, 연달아 취소하면 「이 화면의 요청 막기」를 제안한다.
+  `confirm: true` 액션은 frame 이 실행해도 대시보드 자체 확인 창을 거친다. 기존 `emu:ready`·`emu:action` 은 그대로.
+- `html` 블록 설정의 `inputs: [...]` 와 블록 자신의 액션(`actions:` 의 `- action: {…}`; 문자열은 지금처럼 툴바 id).
+  `POST /api/pages/<page>/frames/<block>/<action>`, `emu run <page>.<block>.<action> --input k=v`. input 은
+  `inputs:` 에 적은 이름만 받는다. 실행 응답에 stdout 이 JSON 이면 `data` 를 더한다. 예제 `docs/examples/html-block`.
 
 ## [0.14.0] - 2026-10-23
 

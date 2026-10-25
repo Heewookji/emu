@@ -1,0 +1,25 @@
+# An html block that talks to the dashboard through window.emu (#49):
+# preview → confirm → run, all inside a custom view. Copy this folder's
+# emu.yaml `pages:` and tool/ into a Flutter project to try it with `emu up`.
+pages:
+  - id: deploy
+    title: Deploy
+    toolbar:
+      - action: { id: sync, label: sync, run: [./tool/tpl.sh, sync] }
+    blocks:
+      - html:
+          id: view
+          title: Deploy
+          src: tool/emu/deploy.html
+          run: [./tool/tpl.sh, list]          # → emu.onData
+          inputs: [env, message]              # what emu.run may pass as {{input.*}}
+          actions:
+            - sync                            # a toolbar action the view may run
+            - action:                         # this block's own: not in the toolbar
+                id: plan
+                run: [./tool/tpl.sh, plan, "{{input.env}}"]
+            - action:
+                id: deploy
+                run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
+                confirm: true                 # the dashboard asks again, showing this command
+      - output: {}

@@ -120,17 +120,23 @@
 
   <div class="modal-dim" id="confirm-dim" hidden></div>
   <div class="modal" id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="modal-from" id="confirm-from" hidden></div>
     <div class="modal-head" id="confirm-title"></div>
     <div class="modal-body">
       <div class="confirm-msg" id="confirm-msg" hidden></div>
+      <pre class="modal-detail" id="confirm-detail" hidden></pre>
+      <div class="form-grid modal-fields" id="confirm-fields" hidden></div>
       <div class="confirm-preview" id="confirm-preview" hidden></div>
-      <details id="confirm-cmd-box">
-        <summary class="muted">runs in the project root: <code id="confirm-cmd-line"></code></summary>
-        <pre id="confirm-cmd"></pre>
-      </details>
-      <div class="muted" id="confirm-then"></div>
+      <div id="confirm-command" hidden>
+        <details id="confirm-cmd-box">
+          <summary class="muted">runs in the project root: <code id="confirm-cmd-line"></code></summary>
+          <pre id="confirm-cmd"></pre>
+        </details>
+        <div class="muted" id="confirm-then"></div>
+      </div>
     </div>
     <div class="modal-foot">
+      <button id="confirm-block" hidden title="Answer this view's confirm and prompt requests with no until the dashboard reloads">Block requests from this view</button>
       <span class="grow"></span>
       <button id="confirm-cancel">Cancel</button>
       <button id="confirm-run" class="run">Run</button>

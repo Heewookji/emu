@@ -1,4 +1,5 @@
 import 'package:emu/src/pages.dart';
+import 'package:emu/src/project_config.dart';
 import 'package:emu/src/pages_api.dart';
 import 'package:test/test.dart';
 
@@ -235,6 +236,70 @@ void main() {
       expect(c.watching('tool/pages/tree.html'), {'p': ['tree']}); // its own file reloads it
     });
 
+    test("an html block's inputs and own actions; toolbar ids stay strings", () {
+      final c = parse(
+        [
+          {
+            'html': {
+              'id': 'deploy',
+              'title': 'Deploy',
+              'src': 'tool/emu/deploy.html',
+              'inputs': ['env', 'message'],
+              'actions': [
+                'sync',
+                {'action': {'id': 'plan', 'run': ['./tool/tpl.sh', 'plan', '{{input.env}}', '{{selected.name}}']}},
+                {
+                  'action': {
+                    'id': 'push',
+                    'run': ['./tool/tpl.sh', 'push', '{{input.env}}', '--message', '{{input.message}}'],
+                    'confirm': true,
+                  },
+                },
+                {'action': {'id': 'typo', 'run': ['./tool/tpl.sh', '{{input.nope}}']}},
+                {'action': {'id': 'plan', 'run': ['./tool/tpl.sh', 'again']}},
+                {'list': {'id': 'x'}},
+              ],
+            },
+          },
+          {'html': {'id': 'clash', 'src': 'x.html', 'actions': [{'action': {'id': 'sync', 'run': ['true']}}]}},
+          {'html': {'id': 'badin', 'src': 'x.html', 'inputs': ['ok', 'not ok']}},
+          {'html': {'id': 'dupin', 'src': 'x.html', 'inputs': ['a', 'a']}},
+          {'html': {'id': 'notlist', 'src': 'x.html', 'actions': 'sync'}},
+        ],
+        toolbar: [
+          {'action': {'id': 'sync', 'run': ['./tool/tpl.sh', 'sync']}},
+          {'action': {'id': 'peek', 'run': ['./tool/tpl.sh', '{{input.env}}']}}, // inputs are the block's alone
+        ],
+      );
+      final page = c.page('p')!;
+      final deploy = page.block('deploy') as HtmlBlock;
+      expect(deploy.inputs, ['env', 'message']);
+      expect(deploy.actions, ['sync']);
+      expect(deploy.blockActions.map((a) => a.id), ['plan', 'push']);
+      expect(deploy.action('plan')!.placeholders, {'input.env', 'selected.name'});
+      expect(deploy.action('push')!.confirm, isNotNull);
+      expect(deploy.action('sync'), isNull); // a toolbar id is not the block's own
+      final json = deploy.toJson();
+      expect(json['inputs'], ['env', 'message']);
+      expect(json['actions'], ['sync']);
+      expect([for (final a in json['blockActions'] as List) a['id']], ['plan', 'push']);
+      expect(page.blocks.map((b) => b.id), ['deploy']);
+      expect(page.toolbar.map((i) => i.id), ['sync']);
+      final all = c.problems.join('\n');
+      for (final expected in [
+        "p.peek.run: {{input.*}} only works in a form's actions or an html block's own actions",
+        "p.deploy.typo.run: no \"nope\" in this block's inputs:",
+        'p.deploy.actions[4]: expected a toolbar action id, or `- action: {id: …, run: […]}` with an id unique in this block',
+        'p.deploy.actions[5]: expected a toolbar action id',
+        'p.clash.actions: "sync" is also a toolbar id',
+        'p.badin.inputs: expected a list of distinct names',
+        'p.dupin.inputs: expected a list of distinct names',
+        'p.notlist.actions: expected a list of toolbar action ids',
+      ]) {
+        expect(all, contains(expected));
+      }
+    });
+
     test('a form: fields, and actions that read them; openUrl instead of run', () {
       final c = parse(
         [
@@ -286,7 +351,7 @@ void main() {
         'p.link.nourl.openUrl: expected a URL',
         'p.noactions.actions: a form needs at least one action',
         'p.dup.fields[1]: needs a name of letters, digits, - or _, unique in this form',
-        "p.bad.run: {{input.*}} only works in a form's actions",
+        "p.bad.run: {{input.*}} only works in a form's actions or an html block's own actions",
       ]) {
         expect(all, contains(expected));
       }
@@ -459,5 +524,16 @@ void main() {
     expect(looksLikePatch('3 templates\n@@ -1,2 +1,2 @@\n'), isTrue);
     expect(looksLikePatch('--- done ---\nok'), isFalse);
     expect(looksLikePatch('[{"name": "a"}]'), isFalse);
+  });
+
+  test('the html block example in docs/ parses without problems', () {
+    final config = loadProjectConfig('docs/examples/html-block', home: 'docs/examples/html-block');
+    final c = parsePages(config.pages);
+    expect(c.problems, isEmpty);
+    final view = c.page('deploy')!.block('view') as HtmlBlock;
+    expect(view.inputs, ['env', 'message']);
+    expect(view.actions, ['sync']);
+    expect(view.blockActions.map((a) => a.id), ['plan', 'deploy']);
+    expect(view.action('deploy')!.confirm, isNotNull);
   });
 }

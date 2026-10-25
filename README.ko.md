@@ -781,13 +781,13 @@ pages:
 |------|--------------------|--------------|
 | `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
 | `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
-| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
+| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
 | `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
 | `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |
 | `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
-  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸, 그 form 의 버튼에서. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
+  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸(그 form 의 버튼에서), 또는 html 블록이 자기 액션에 넘기는 값(`inputs:` 에 적은 이름만). `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
   들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
   명령에 치환을 쓰거나 프로그램 자리(첫 요소)에 치환을 쓰면 설정 오류다 — 값은 명령에 넘길 것만 정하고,
   무엇을 실행할지는 정하지 못한다.
@@ -860,21 +860,56 @@ pages:
   ```
 - `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
   frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
-  데이터는 로드 뒤와 새로 고칠 때마다 `postMessage` 의 `{type: "emu:data", ok, data, text, error,
-  needs, selected}` 로 온다(다시 받으려면 `{type: "emu:ready"}` 를 보낸다). 툴바 액션은
-  `{type: "emu:action", id}` 를 보내 실행한다 — `actions:` 에 적은 id만, 버튼과 같은 확인을 거쳐.
-  파일을 저장하면 frame 이 다시 뜬다.
+  대시보드가 파일 앞에 작은 도우미 `window.emu` 를 넣어 주므로, 커스텀 화면은 `postMessage` 를 직접
+  다루지 않고 대시보드와 주고받는다. 파일을 저장하면 frame 이 다시 뜬다.
 
-  ```html
-  <!doctype html>
-  <pre id="out"></pre>
-  <script>
-    addEventListener('message', (e) => {
-      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
-    });
-    parent.postMessage({ type: 'emu:ready' }, '*');
-  </script>
+  | 함수 | 하는 일 | 돌려주는 값 |
+  |------|---------|-------------|
+  | `emu.onData(fn)` | 블록 `run:` 의 출력으로 `fn({ok, data, text, error, needs, selected})` — 이미 왔으면 바로, 그리고 새로 고칠 때마다 | 구독 해제 함수 |
+  | `emu.run(id, {input})` | 블록 `actions:` 에 있는 id 를 실행 — 블록 자신의 액션, 또는 거기 적은 툴바 액션 | `{ok, exitCode, error, output, data}` — stdout 이 JSON 이면 `data`. 실행되지 않았으면 `cancelled`·`busy`·`needs` |
+  | `emu.confirm({title, message, detail, danger, button})` | 예/아니오를 묻는다 | `true` / `false` |
+  | `emu.prompt({title, message, fields: [{name, label, default}]})` | 글자를 입력받는다 | `{name: value, …}` 또는 `null` |
+  | `emu.toast(text, level)` | 블록 제목을 앞에 붙인 토스트 | — |
+
+  ```yaml
+  - html:
+      id: view
+      title: Deploy
+      src: tool/emu/deploy.html
+      run: [./tool/tpl.sh, list]          # → emu.onData
+      inputs: [env, message]              # emu.run 이 {{input.*}} 로 넘길 수 있는 이름
+      actions:
+        - sync                            # frame 이 실행할 수 있는 툴바 액션
+        - action:                         # 이 블록만의 액션(툴바에 안 보임)
+            id: plan
+            run: [./tool/tpl.sh, plan, "{{input.env}}"]
+        - action:
+            id: deploy
+            run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
+            confirm: true
   ```
+
+  ```js
+  emu.onData(({ data }) => render(data));
+  const plan = await emu.run('plan', { input: { env: 'stage' } });
+  if (!plan.ok) return emu.toast(`미리보기 실패: ${plan.error}`, 'error');
+  if (await emu.confirm({ title: `템플릿 ${plan.data.length}개를 push 할까요?`, detail: plan.data.map(t => t.path).join('\n') })) {
+    await emu.run('deploy', { input: { env: 'stage', message: '배포 화면에서' } });
+  }
+  ```
+
+  전체 예제는 [`docs/examples/html-block`](docs/examples/html-block). 커스텀 화면이 넘지 못하는 선:
+  - 확인·입력 창은 대시보드가 frame **바깥에** 그리고, 머리에 출처를 붙인다
+    (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`). 창의 글자는 HTML 로 해석하지 않고 텍스트로만
+    보인다. 한 번에 한 창 — 창이 열려 있을 때 온 요청은 `busy`(`false`/`null`)로 답한다. 지금 보이는
+    페이지의 frame 만 답을 받는다.
+  - `emu.confirm` 은 화면 자신의 질문일 뿐, `confirm: true` 를 대신하지 않는다. 그런 액션은 frame 이
+    실행해도 대시보드 자체 확인 창(실제 명령 줄 포함)을 다시 거친다 — frame 은 `confirmed` 를 보낼 수 없다.
+  - 창을 짧은 시간에 연달아 취소하면 **Block requests from this view** 를 제안하고, 막으면 대시보드를 다시
+    불러오기 전까지 그 화면의 `confirm`/`prompt` 는 바로 아니오로 답한다.
+  - `input` 은 `inputs:` 에 적은 이름만 받고(나머지는 버림), 다른 치환처럼 값은 인자 하나 안에만 들어간다.
+  - 도우미 없이도 지금처럼 된다: 데이터는 `{type: "emu:data", …}` 로 오고, `{type: "emu:ready"}` 로 다시
+    받으며, `{type: "emu:action", id}` 는 답 없이 액션을 실행한다.
 
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
@@ -896,6 +931,7 @@ emu run templates.local            # on/off 없이 주면 현재 상태
 emu run templates.publish --select name=home_banner         # confirm: 확인 창 내용·preview 를 찍고 y/N (--yes 면 건너뜀)
 emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
 emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
+emu run deploy.view.plan --input env=stage         # html 블록 자신의 액션, inputs: 의 값과 함께
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```

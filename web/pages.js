@@ -189,9 +189,11 @@ async function refreshToggles(page) {
 
 // Run a toolbar item or row button. An item marked confirm: answers 428 with
 // the exact command (values filled in), the dialog's words and the preview
-// output; that is what the dialog shows.
-async function runItem(page, item, key, url, body) {
-  if (pageState.running.has(key)) return;
+// output; that is what the dialog shows. [frame] is the html block that asked for the run, if one did: its dialog
+// says so, and falls under that frame's limits (frameDialog). Resolves to the
+// run's answer, or {ok: false, error, busy | cancelled} when it didn't run.
+async function runItem(page, item, key, url, body, frame = null) {
+  if (pageState.running.has(key)) return { ok: false, busy: true, error: `${item.label} is already running` };
   pageState.running.add(key);
   renderRunning(page);
   try {
@@ -201,7 +203,9 @@ async function runItem(page, item, key, url, body) {
     if (r.status === 428 && j.needsConfirm) {
       pageState.running.delete(key);
       renderRunning(page);
-      if (!(await confirmRun(item, j))) return;
+      const opts = confirmOpts(item, j);
+      const answer = frame ? await frameDialog(page, frame, { ...opts, verb: 'wants to run this' }) : await confirmRun(opts);
+      if (!answer.ok) return { ok: false, cancelled: true, busy: !!answer.busy, error: refusalText(answer) };
       pageState.running.add(key);
       renderRunning(page);
       r = await post({ ...body, confirmed: true });
@@ -209,8 +213,10 @@ async function runItem(page, item, key, url, body) {
     }
     if (j.exitCode === undefined) toast(`${item.label}: ${j.error || 'failed'}`); // busy, no selection, unknown
     else finishRun(page, item, key, j);
+    return j;
   } catch (e) {
     toast(`${item.label} failed: ${e}`);
+    return { ok: false, error: String(e) };
   } finally {
     pageState.running.delete(key);
     if (currentPage() === page) renderRunning(page);
@@ -594,10 +600,18 @@ function splitPatch(patch) {
 
 // html: a project file in a sandboxed frame. It runs in an opaque origin
 // (no allow-same-origin) under a CSP with no network, gets its data by
-// postMessage ({type: 'emu:data', …}) and may ask for its declared toolbar
-// actions ({type: 'emu:action', id}) — which run like a button press,
+// postMessage ({type: 'emu:data', …}) and may ask for its declared actions —
+// toolbar ids and the block's own — which run like a button press,
 // confirmation included. The file arrives through the API and goes in as
 // srcdoc, so the session token never appears in a frame's URL.
+//
+// In front of the file goes a small helper, window.emu (frameHelper), so a
+// custom view needn't speak postMessage itself:
+//   frame → dashboard                     dashboard → frame
+//   emu:run {reqId, id, input}            emu:result {reqId, ok, exitCode, error, output, data}
+//   emu:confirm {reqId, title, message, detail, danger, button}   emu:result {reqId, value: bool}
+//   emu:prompt {reqId, title, message, fields: [{name, label, default}]}  emu:result {reqId, value: {…} | null}
+//   emu:toast {text, level}  ·  emu:ready  ·  emu:action {id} (emu:run without a reply)
 const FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
   + "img-src data: blob:; font-src data:; form-action 'none'";
 
@@ -610,8 +624,53 @@ function initHtml(page, block, el) {
   loadFrame(page, block);
 }
 
+// window.emu inside a frame. Runs there, not here: it is put in the srcdoc as
+// source text, so it must not use anything from this file.
+function frameHelper() {
+  const pending = new Map();
+  const listeners = [];
+  let seq = 0;
+  let last = null;
+  const send = (m) => parent.postMessage(m, '*');
+  const ask = (type, body) => new Promise((resolve) => {
+    const reqId = ++seq;
+    pending.set(reqId, resolve);
+    send({ ...body, type, reqId });
+  });
+  addEventListener('message', (e) => {
+    const m = e.data;
+    if (e.source !== parent || !m || typeof m !== 'object') return;
+    if (m.type === 'emu:data') {
+      last = m;
+      for (const fn of listeners.slice()) {
+        try { fn(m); } catch (err) { console.error(err); }
+      }
+    } else if (m.type === 'emu:result' && pending.has(m.reqId)) {
+      const resolve = pending.get(m.reqId);
+      pending.delete(m.reqId);
+      const { type, reqId, ...result } = m;
+      resolve(result);
+    }
+  });
+  const emu = {
+    // fn({ok, data, text, error, needs, selected}) now (if data came already) and on every refresh.
+    onData(fn) {
+      listeners.push(fn);
+      if (last) fn(last);
+      return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
+    },
+    run: (id, opts = {}) => ask('emu:run', { id: String(id), input: opts.input || {} }),
+    confirm: (opts = {}) => ask('emu:confirm', typeof opts === 'string' ? { title: opts } : opts).then((r) => r.value === true),
+    prompt: (opts = {}) => ask('emu:prompt', opts).then((r) => r.value ?? null),
+    toast: (text, level = 'info') => send({ type: 'emu:toast', text: String(text), level }),
+  };
+  Object.defineProperty(window, 'emu', { value: Object.freeze(emu) });
+}
+// Its source goes in as text (Function.prototype.toString): a minifier that renames or inlines it breaks the frame.
+const FRAME_HELPER = `<script>(${frameHelper})();</script>`;
+
 function withFrameCsp(html) {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">`;
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">${FRAME_HELPER}`;
   const doctype = html.match(/^\s*<!doctype[^>]*>/i); // keep it first, or the frame drops to quirks mode
   return doctype ? doctype[0] + meta + html.slice(doctype[0].length) : meta + html;
 }
@@ -656,20 +715,91 @@ function postFrameData(page, block) {
   }, '*');
 }
 
-window.addEventListener('message', (e) => {
-  const page = currentPage();
-  if (!page) return;
-  const block = page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe')?.contentWindow === e.source);
+// Requests from frames. Only a frame of the page on screen gets anything; one
+// left over from a page the dashboard moved away from is told so.
+window.addEventListener('message', async (e) => {
   const msg = e.data;
-  if (!block || !msg || typeof msg !== 'object') return;
-  if (msg.type === 'emu:ready') postFrameData(page, block);
-  else if (msg.type === 'emu:action') {
-    const item = page.toolbar.find(i => i.kind === 'action' && i.id === msg.id);
-    if (!item || !block.actions.includes(item.id)) { toast(`${block.title}: action "${msg.id}" is not allowed`); return; }
-    runItem(page, item, itemKey(page, item),
-      `/api/pages/${encodeURIComponent(page.id)}/run/${encodeURIComponent(item.id)}`, runValues(page));
+  const frame = [...pageEls.body.querySelectorAll('iframe.ext-frame')].find(f => f.contentWindow === e.source);
+  if (!frame || !msg || typeof msg !== 'object') return;
+  const reply = (answer) => {
+    if (typeof msg.reqId === 'number' || typeof msg.reqId === 'string') {
+      e.source.postMessage({ ...answer, type: 'emu:result', reqId: msg.reqId }, '*');
+    }
+  };
+  const page = currentPage();
+  const block = page && !pageEls.body.hidden
+    && page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe') === frame);
+  if (!block) { reply({ ok: false, value: null, error: 'this view is not on screen' }); return; }
+  switch (msg.type) {
+    case 'emu:ready': postFrameData(page, block); break;
+    case 'emu:action': frameRun(page, block, msg.id); break; // the older form: no reply
+    case 'emu:run': reply(await frameRun(page, block, msg.id, msg.input)); break;
+    case 'emu:confirm': {
+      const a = await frameDialog(page, block, {
+        verb: 'asks', title: clip(msg.title, 200) || 'Confirm?', message: clip(msg.message, 2000),
+        detail: clip(msg.detail, 20000), danger: msg.danger === true, button: clip(msg.button, 40) || 'OK',
+      });
+      reply({ value: a.ok === true, ...(a.ok ? {} : { error: refusalText(a) }) });
+      break;
+    }
+    case 'emu:prompt': {
+      const seen = new Set();
+      const fields = (Array.isArray(msg.fields) ? msg.fields : []).slice(0, 12)
+        .filter(f => f && typeof f.name === 'string' && f.name && !seen.has(f.name) && seen.add(f.name))
+        .map(f => ({ name: f.name, label: clip(f.label ?? f.name, 100), default: clip(f.default, 2000) }));
+      if (!fields.length) { reply({ value: null, error: 'prompt needs fields: [{name, label?, default?}]' }); break; }
+      const a = await frameDialog(page, block, {
+        verb: 'asks', title: clip(msg.title, 200) || 'Input', message: clip(msg.message, 2000),
+        fields, button: clip(msg.button, 40) || 'OK',
+      });
+      reply({ value: a.ok ? a.values : null, ...(a.ok ? {} : { error: refusalText(a) }) });
+      break;
+    }
+    case 'emu:toast':
+      toast(`${msg.level === 'error' ? '✗ ' : ''}${block.title}: ${clip(msg.text, 300)}`); // named, so it can't pass for emu's own
+      break;
   }
 });
+
+// What a frame may hold: text, cut to [n] characters.
+function clip(v, n) {
+  return v === undefined || v === null ? '' : String(v).slice(0, n);
+}
+
+// emu.run(id, {input}): the block's own action, or a toolbar action it lists.
+// Only names in the block's inputs: go along.
+async function frameRun(page, block, id, input) {
+  const own = block.blockActions.find(a => a.id === id);
+  const item = own || (block.actions.includes(id) ? page.toolbar.find(i => i.kind === 'action' && i.id === id) : null);
+  if (!item) {
+    toast(`${block.title}: action "${clip(id, 60)}" is not allowed`);
+    return { ok: false, error: `action "${clip(id, 60)}" is not allowed — list it under the block's actions:` };
+  }
+  const pid = encodeURIComponent(page.id);
+  const j = own
+    ? await runItem(page, own, `${page.id}.${block.id}.${own.id}`,
+      `/api/pages/${pid}/frames/${encodeURIComponent(block.id)}/${encodeURIComponent(own.id)}`,
+      { ...runValues(page), input: frameInput(block, input) }, block)
+    : await runItem(page, item, itemKey(page, item), `/api/pages/${pid}/run/${encodeURIComponent(item.id)}`, runValues(page), block);
+  return {
+    ok: !!j.ok,
+    exitCode: j.exitCode ?? null,
+    error: j.error ?? null,
+    output: j.output ?? '',
+    data: j.data ?? null,
+    ...(j.busy ? { busy: true } : {}),
+    ...(j.cancelled ? { cancelled: true } : {}),
+    ...(j.needs ? { needs: j.needs } : {}),
+  };
+}
+
+function frameInput(block, input) {
+  const out = {};
+  if (input && typeof input === 'object') {
+    for (const name of block.inputs) if (input[name] !== undefined && input[name] !== null) out[name] = input[name];
+  }
+  return out;
+}
 
 // form: fields and the buttons that use them. What's typed fills
 // {{input.<field>}} server-side and is kept per browser. With no fields
@@ -735,34 +865,54 @@ function outputHtml(page) {
     + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
 }
 
-// The confirm dialog. Its words come from emu.yaml (`confirm:`), filled as
-// text; the command it runs is always there, folded under them. A danger
-// action keeps focus on Cancel, so Enter alone doesn't run it; a failed
-// preview disables Run unless the action allows it.
-let confirmResolve = null;
-function confirmRun(item, res) {
-  const c = res.confirm || {};
-  const pv = res.preview;
-  const msg = document.getElementById('confirm-msg');
-  const run = document.getElementById('confirm-run');
-  pageEls.confirm.classList.toggle('danger', !!c.danger);
-  pageEls.confirm.classList.toggle('wide', !!pv);
-  document.getElementById('confirm-title').textContent = c.title || `Run “${item.label}”?`;
-  msg.textContent = c.message || '';
-  msg.hidden = !c.message;
-  document.getElementById('confirm-cmd').textContent = `$ ${res.command}`;
-  document.getElementById('confirm-cmd-line').textContent = `$ ${res.command}`;
-  // Nothing else to read: show the command unfolded, as before.
-  document.getElementById('confirm-cmd-box').open = !c.message && !pv;
-  renderConfirmPreview(pv);
-  document.getElementById('confirm-then').textContent =
-    item.then !== 'none' ? `then: hot ${item.then} when it succeeds` : '';
-  run.textContent = c.button || 'Run';
-  run.disabled = !!pv?.blocks;
-  run.title = pv?.blocks ? 'the preview failed' : '';
+// ---- dialogs -----------------------------------------------------------------
+// One dialog at a time, drawn here — outside every frame, where a frame can't
+// read or press it: the confirmation of a `confirm:` run, and what a custom
+// view asks (emu.confirm, emu.prompt). Every text goes in as text, never as
+// HTML. A run's words come from emu.yaml (`confirm:`); the command it runs is
+// always there, folded under them. A danger dialog keeps focus on Cancel, so
+// Enter alone doesn't press Run; a failed preview disables Run unless the
+// action allows it.
+
+const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'cancel', 'run']
+  .map(k => [k, document.getElementById(`confirm-${k}`)]));
+let dialogResolve = null;
+const dialogOpen = () => dialogResolve !== null;
+
+// Resolves to {ok, values?} — values: the fields as typed — or {ok: false, block: true}.
+function openDialog({ from = '', title, message = '', detail = '', fields = [], preview = null, command = '', then = '', button = 'OK', danger = false, offerBlock = false }) {
+  const show = (el, text) => { el.textContent = text; el.hidden = !text; };
+  pageEls.confirm.classList.toggle('danger', danger);
+  pageEls.confirm.classList.toggle('wide', !!preview);
+  show(dlg.from, from);
+  dlg.title.textContent = title;
+  show(dlg.msg, message);
+  show(dlg.detail, detail);
+  dlg.fields.replaceChildren();
+  dlg.fields.hidden = !fields.length;
+  for (const f of fields) {
+    const id = `confirm-field-${dlg.fields.children.length}`;
+    const label = Object.assign(document.createElement('label'), { htmlFor: id, textContent: f.label });
+    const input = Object.assign(document.createElement('input'), {
+      id, className: 'field', type: 'text', value: f.default || '', autocomplete: 'off', spellcheck: false,
+    });
+    input.dataset.name = f.name;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !danger) dlg.run.click(); });
+    dlg.fields.append(label, input);
+  }
+  renderConfirmPreview(preview);
+  dlg.command.hidden = !command;
+  dlg.cmd.textContent = dlg['cmd-line'].textContent = command ? `$ ${command}` : '';
+  // Nothing else to read: show the command unfolded.
+  dlg['cmd-box'].open = !message && !preview;
+  dlg.then.textContent = then;
+  dlg.run.textContent = button;
+  dlg.run.disabled = !!preview?.blocks;
+  dlg.run.title = preview?.blocks ? 'the preview failed' : '';
+  dlg.block.hidden = !offerBlock;
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = false;
-  (c.danger || run.disabled ? document.getElementById('confirm-cancel') : run).focus();
-  return new Promise((resolve) => { confirmResolve = resolve; });
+  (fields.length ? dlg.fields.querySelector('input') : danger || dlg.run.disabled ? dlg.cancel : dlg.run).focus();
+  return new Promise((resolve) => { dialogResolve = resolve; });
 }
 
 // A preview's output: a diff like the Changes tab, JSON rows as a table, or text.
@@ -788,15 +938,75 @@ function renderConfirmPreview(pv) {
   host.innerHTML = `<div class="pv-head"><span class="muted">preview</span><span class="cmd" title="${escapeHtml(pv.command)}">$ ${escapeHtml(pv.command)}</span>${status}</div>`
     + body + (pv.ok || pv.blocks === false ? '' : '<div class="fail-mark">Run is off until the preview succeeds.</div>');
 }
-function closeConfirm(ok) {
+
+function closeDialog(answer) {
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;
-  confirmResolve?.(ok);
-  confirmResolve = null;
+  const resolve = dialogResolve;
+  dialogResolve = null;
+  resolve?.(answer);
 }
-document.getElementById('confirm-run').onclick = () => closeConfirm(true);
-document.getElementById('confirm-cancel').onclick = () => closeConfirm(false);
-pageEls.confirmDim.onclick = () => closeConfirm(false);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmResolve) closeConfirm(false); });
+dlg.run.onclick = () => closeDialog({
+  ok: true,
+  values: Object.fromEntries([...dlg.fields.querySelectorAll('input')].map(i => [i.dataset.name, i.value])),
+});
+dlg.cancel.onclick = () => closeDialog({ ok: false });
+dlg.block.onclick = () => closeDialog({ ok: false, block: true });
+pageEls.confirmDim.onclick = () => closeDialog({ ok: false });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && dialogOpen()) closeDialog({ ok: false }); });
+
+// The dialog for a run's 428 answer: its `confirm:` words, preview and command.
+function confirmOpts(item, res) {
+  const c = res.confirm || {};
+  return {
+    title: c.title || `Run “${item.label}”?`,
+    message: c.message || '',
+    preview: res.preview || null,
+    command: res.command,
+    then: item.then !== 'none' ? `then: hot ${item.then} when it succeeds` : '',
+    button: c.button || 'Run',
+    danger: !!c.danger,
+  };
+}
+
+function confirmRun(opts) {
+  return dialogOpen() ? Promise.resolve({ ok: false, busy: true }) : openDialog(opts);
+}
+
+// Limits on what frames ask for. A frame whose dialogs keep getting cancelled
+// is offered a way out: block it, and until the dashboard reloads its
+// confirm/prompt answer no (false/null) at once — runs that need a
+// confirmation included.
+const frameGuard = { blocked: new Set(), cancels: {} }; // 'page.block' → times of recent cancels
+const FRAME_SPAM_MS = 20000;
+const FRAME_SPAM_CANCELS = 2;
+
+// A dialog for [block]'s frame, headed with who asks; [verb]: 'asks', 'wants to run this'.
+async function frameDialog(page, block, { verb, ...opts }) {
+  const key = blockKey(page, block);
+  if (frameGuard.blocked.has(key)) return { ok: false, blocked: true };
+  if (dialogOpen()) return { ok: false, busy: true };
+  if (currentPage() !== page || document.visibilityState !== 'visible') return { ok: false, hidden: true };
+  const now = Date.now();
+  const recent = (frameGuard.cancels[key] || []).filter(t => now - t < FRAME_SPAM_MS);
+  const answer = await openDialog({
+    ...opts,
+    from: `“${block.title}” (emu.yaml · ${block.src}) ${verb}:`,
+    offerBlock: recent.length >= FRAME_SPAM_CANCELS,
+  });
+  frameGuard.cancels[key] = answer.ok ? [] : [...recent, now];
+  if (answer.block) {
+    frameGuard.blocked.add(key);
+    toast(`${block.title}: its requests are blocked until the dashboard reloads`);
+  }
+  return answer;
+}
+
+function refusalText(answer) {
+  return answer.busy ? 'another dialog is open'
+    : answer.blocked || answer.block ? 'requests from this view are blocked'
+      : answer.hidden ? 'this view is not on screen'
+        : 'cancelled';
+}
 
 function stripAnsi(s) { return (s || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ''); }
 

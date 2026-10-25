@@ -65,6 +65,15 @@ pages:
       - html:
           id: escape
           src: tool/link.html
+      - html:
+          id: view
+          src: tool/tree.html
+          inputs: [env, note]
+          actions:
+            - publish
+            - action: { id: plan, run: [./tool/t.sh, plan, "{{input.env}}"] }
+            - action: { id: echo, run: [./tool/t.sh, args, "{{input.env}}", "{{input.note}}"] }
+            - action: { id: push, run: [./tool/t.sh, args, push, "{{input.env}}"], confirm: true }
 ''';
 
 const _script = r'''#!/bin/sh
@@ -73,6 +82,7 @@ case "$1" in
   diff) printf -- '--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-old %s\n+new %s\n' "$2" "$2" "$3" "$3" ;;
   args) shift; for a in "$@"; do echo "[$a]"; done ;;
   notjson) echo "rows: 2" ;;
+  plan) echo "[{\"path\": \"home.json\", \"env\": \"$2\"}]" ;;
   value) echo "{\"key\": \"$2\", \"value\": {\"title\": \"Hello\", \"items\": [1, 2]}}" ;;
 esac
 ''';
@@ -305,6 +315,57 @@ void main() {
 
     (code, _) = await call('POST', '/api/pages/tpl/forms/items/check', {});
     expect(code, 404); // a list's row action isn't a form action
+  });
+
+  test("an html block's own action takes its inputs, each value one argument", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/echo', {
+      'input': {'env': 'stage', 'note': r'two words; $(id)', 'extra': 'dropped'},
+    });
+    expect(code, 200);
+    expect(j['item'], 'view.echo');
+    expect(j['output'], '[stage]\n[two words; \$(id)]\n');
+    expect(j.containsKey('data'), isFalse); // stdout isn't JSON
+
+    // Only names in inputs: go along — the rest never reach a placeholder.
+    (code, j) = await call('POST', '/api/pages/tpl/frames/view/echo', {
+      'input': {'env': 'stage'},
+    });
+    expect(code, 400);
+    expect(j['needs'], 'input');
+  });
+
+  test("an html block action's JSON stdout comes back as data", () async {
+    final (code, j) = await call('POST', '/api/pages/tpl/frames/view/plan', {'input': {'env': 'prod'}});
+    expect(code, 200);
+    expect(j['ok'], isTrue);
+    expect(j['data'], [
+      {'path': 'home.json', 'env': 'prod'},
+    ]);
+  });
+
+  test('an html block action marked confirm: true still needs the confirmation', () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/push', {'input': {'env': 'prod'}});
+    expect(code, 428);
+    expect(j['needsConfirm'], isTrue);
+    expect(j['command'], './tool/t.sh args push prod');
+
+    (code, j) = await call('POST', '/api/pages/tpl/frames/view/push', {'input': {'env': 'prod'}, 'confirmed': true});
+    expect(code, 200);
+    expect(j['output'], '[push]\n[prod]\n');
+  });
+
+  test("frames/<block>/<action> runs only an html block's own actions", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/nope', {});
+    expect(code, 404);
+    expect(j['error'], contains('no html block action "view.nope"'));
+    (code, _) = await call('POST', '/api/pages/tpl/frames/view/publish', {}); // a toolbar id: run/publish
+    expect(code, 404);
+    (code, _) = await call('POST', '/api/pages/tpl/frames/items/check', {}); // a list's row action
+    expect(code, 404);
+    (code, _) = await call('GET', '/api/pages/tpl/frames/view/echo');
+    expect(code, 405);
+    (code, j) = await call('GET', '/api/pages/tpl/frames/view'); // the file, as before
+    expect(j['html'], '<!doctype html><p>tree</p>');
   });
 
   test('watching maps changed paths to the blocks to fetch again', () {

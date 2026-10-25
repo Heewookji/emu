@@ -6,6 +6,7 @@
 /// - `POST /api/pages/<page>/run/<item>`            run a toolbar item
 /// - `POST /api/pages/<page>/rows/<list>/<action>`  run a list's row button
 /// - `POST /api/pages/<page>/forms/<form>/<action>` run a form's button
+/// - `POST /api/pages/<page>/frames/<html>/<action>` run an html block's own action
 /// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows, a diff's patch, an html block's data
 /// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 ///
@@ -14,7 +15,8 @@
 /// `command`, `confirm: {title, message?, danger, button}` and the `preview`
 /// output, if it has one — and runs nothing but that preview.
 /// GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
-/// placeholders of commands from the config.
+/// placeholders of commands from the config. A run's answer carries `data`
+/// too when its stdout is JSON, for an html block's `emu.run`.
 ///
 /// The config is re-read on every request, so editing `emu.yaml` needs no
 /// restart. Every run is reported to dashboards over the WebSocket
@@ -146,6 +148,16 @@ final _patchStart = RegExp(r'^(diff --git |--- \S.*\n\+\+\+ |@@ -\d)', multiLine
 /// Whether [text] reads as a unified diff (`diff --git`, a `---`/`+++` pair
 /// or a hunk header at a line start).
 bool looksLikePatch(String text) => _patchStart.hasMatch(text);
+/// [stdout] as a JSON value, or null when it is empty or not JSON.
+Object? stdoutJson(String stdout) {
+  final t = stdout.trim();
+  if (t.isEmpty) return null;
+  try {
+    return jsonDecode(t);
+  } on FormatException {
+    return null;
+  }
+}
 
 /// Placeholder values carried by a request: `selected`/`row`/`input` maps and
 /// `seg` in a JSON body, or `selected.<col>=…`/`seg=…` in a query.
@@ -249,7 +261,7 @@ class PagesApi {
         final item = page.item(parts[4]);
         if (item is! PageToggle) return _json({'ok': false, 'error': 'no toggle "${parts[4]}" on page ${page.id}'}, status: 404);
         return _json(await _state(page, item, placeholderValues(query: query)));
-      case ('run', 5) || ('rows', 6) || ('forms', 6):
+      case ('run', 5) || ('rows', 6) || ('forms', 6) || ('frames', 6):
         if (req.method != 'POST') return _json({'ok': false, 'error': 'use POST'}, status: 405);
         Map body;
         try {
@@ -258,21 +270,28 @@ class PagesApi {
         } catch (_) {
           return _json({'ok': false, 'error': 'invalid request body'}, status: 400);
         }
-        final vars = placeholderValues(body: body);
         final confirmed = body['confirmed'] == true;
-        if (parts[3] == 'rows' || parts[3] == 'forms') {
+        if (parts[3] != 'run') {
           final block = page.block(parts[4]);
           final action = switch (block) {
             ListBlock() when parts[3] == 'rows' => block.rowAction(parts[5]),
             FormBlock() when parts[3] == 'forms' => block.action(parts[5]),
+            HtmlBlock() when parts[3] == 'frames' => block.action(parts[5]),
             _ => null,
           };
+          if (block is HtmlBlock && body['input'] is Map) {
+            // A frame passes only what its block declared in inputs:.
+            final input = body['input'] as Map;
+            body = {...body, 'input': {for (final k in block.inputs) if (input.containsKey(k)) k: input[k]}};
+          }
+          final vars = placeholderValues(body: body);
           if (action == null) {
-            final what = parts[3] == 'rows' ? 'row action' : 'form action';
+            final what = switch (parts[3]) { 'rows' => 'row action', 'forms' => 'form action', _ => 'html block action' };
             return _json({'ok': false, 'error': 'no $what "${parts[4]}.${parts[5]}" on page ${page.id}'}, status: 404);
           }
           return _run(page, action, itemId: '${block!.id}.${action.id}', vars: vars, confirmed: confirmed);
         }
+        final vars = placeholderValues(body: body);
         final item = page.item(parts[4]);
         if (item == null) {
           return _json({
@@ -355,7 +374,7 @@ class PagesApi {
     _last[page.id] = run;
     _logResult(key, run);
     broadcast({'type': 'ext', 'event': 'finished', 'page': page.id, 'item': itemId, 'run': run.toJson()});
-    return _json(run.toJson());
+    return _json({...run.toJson(), 'data': ?stdoutJson(run.stdout)});
   }
 
   /// A confirm dialog's `preview:` output, read the way blocks read theirs:
