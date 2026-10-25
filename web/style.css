@@ -341,6 +341,11 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .lst tr.pick:hover td { background: var(--bg-row-alt); }
 .lst tr.sel td { background: #1c2430; }
 .lst tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.lst .lst-check { width: 1%; padding-right: 0; }
+.lst .lst-check input { margin: 0; vertical-align: middle; cursor: pointer; }
+.blk-head .checks { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.blk-head .checks + .count { margin-left: 0; }
+.blk-head .checks button { padding: 2px 8px; font-size: 11px; }
 .lst .row-actions { text-align: right; }
 .lst .row-actions button { padding: 2px 8px; font-size: 11px; }
 .lst .row-actions button + button { margin-left: 4px; }

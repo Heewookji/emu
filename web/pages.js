@@ -12,6 +12,8 @@
 //
 // The first list on a page holds its selection: the picked row is sent with
 // every run and block fetch, and fills `{{selected.<col>}}` server-side.
+// A list with `check:` also has checked rows — many at once — sent with every
+// run for `{{checked.<col>...}}`.
 
 const pageEls = {
   tabs: document.getElementById('page-tabs'),
@@ -29,6 +31,8 @@ const pageState = {
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
   selected: {},          // page id → key value of the picked row
+  checked: {},           // 'page.block' → key values of the checked rows (check: true)
+  bulk: {},              // 'page.block.action' → progress of a bulk run, "2/5"
   seg: {},               // 'page.block' → chosen segment
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
@@ -42,13 +46,14 @@ try {
   pageState.current = localStorage.getItem(PAGE_KEY) || 'debug';
   const prefs = JSON.parse(localStorage.getItem(PAGE_PREFS_KEY)) || {};
   if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
+  if (prefs.checked && typeof prefs.checked === 'object') pageState.checked = prefs.checked;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
 } catch (_) {}
 function savePagePrefs() {
   try {
-    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, seg: pageState.seg, input: pageState.input, sizes: pageState.sizes }));
+    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, input: pageState.input, sizes: pageState.sizes }));
   } catch (_) {}
 }
 
@@ -128,13 +133,111 @@ function select(page, list, row) {
   loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
 }
 
-// Placeholder values sent with a run: the picked row and, for a row button, its row.
+// Placeholder values sent with a run: the picked row, the checked rows and,
+// for a row button, its row. A list whose tool keeps the checks (check.column)
+// isn't sent: the server reads them from the list itself.
 function runValues(page, row) {
   const v = {};
   const sel = selectedRow(page);
   if (sel) v.selected = sel;
+  const own = checkLists(page).filter(b => !b.check.column);
+  if (own.length) v.checked = Object.fromEntries(own.map(b => [b.id, checkedRows(page, b)]));
   if (row) v.row = row;
   return v;
+}
+
+// ---- checked rows ------------------------------------------------------------
+// check: true — the dashboard keeps the checked keys per browser, and drops
+// those a fresh fetch no longer lists. check: {column, toggle} — the tool
+// keeps them: the column says, and a click runs toggle on that row.
+
+function checkLists(page) { return page.blocks.filter(b => b.kind === 'list' && b.check); }
+
+// Mirrors isCheckedValue in pages.dart.
+function isCheckedValue(v) {
+  return v === true || (typeof v === 'number' && v !== 0)
+    || (typeof v === 'string' && /^(true|yes|y|on|1|checked)$/i.test(v.trim()));
+}
+
+function checkedKeys(page, block) {
+  if (!block.check.column) return new Set(pageState.checked[blockKey(page, block)] || []);
+  const rows = pageState.data[blockKey(page, block)]?.result?.rows || [];
+  return new Set(rows.filter(r => isCheckedValue(r[block.check.column])).map(r => rowKeyOf(block, r)));
+}
+
+// The checked rows, as last fetched.
+function checkedRows(page, block) {
+  const rows = pageState.data[blockKey(page, block)]?.result?.rows;
+  if (!rows) return [];
+  const keys = checkedKeys(page, block);
+  return rows.filter(r => keys.has(rowKeyOf(block, r)));
+}
+
+// `needs: checked` with nothing checked in that list.
+function blockedByChecks(page, item) {
+  const list = item.needsChecked && page.blocks.find(b => b.id === item.needsChecked);
+  return !!list && !checkedRows(page, list).length;
+}
+
+// Check (on) or uncheck these rows. The tool's own state: one toggle run per
+// row that differs, in turn — the runs' broadcasts fetch the list again.
+async function setChecked(page, block, rows, on) {
+  const keys = checkedKeys(page, block);
+  const change = rows.filter(r => keys.has(rowKeyOf(block, r)) !== on);
+  if (!change.length) return;
+  if (!block.check.column) {
+    for (const r of change) on ? keys.add(rowKeyOf(block, r)) : keys.delete(rowKeyOf(block, r));
+    pageState.checked[blockKey(page, block)] = [...keys];
+    savePagePrefs();
+    renderRunning(page); // counts, and buttons that need a checked row
+    return;
+  }
+  const toggle = { id: 'check', label: 'check', command: block.check.toggle, then: 'none' };
+  for (const r of change) {
+    const run = await runItem(page, toggle, `${page.id}.${block.id}.check`,
+      `/api/pages/${encodeURIComponent(page.id)}/rows/${encodeURIComponent(block.id)}/check`, runValues(page, r), { quiet: true });
+    if (!run?.ok) break;
+  }
+}
+
+// A `bulk: true` row button from the list's head: once per checked row, in
+// turn, stopping at the first failure. A confirm: true button asks once.
+async function runBulk(page, block, a) {
+  const rows = checkedRows(page, block);
+  const key = `${page.id}.${block.id}.${a.id}`;
+  if (!rows.length || pageState.bulk[key] || pageState.running.has(key)) return;
+  const url = `/api/pages/${encodeURIComponent(page.id)}/rows/${encodeURIComponent(block.id)}/${encodeURIComponent(a.id)}`;
+  const post = async (row, confirmed) => {
+    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...runValues(page, row), confirmed }) });
+    return [r, await r.json()];
+  };
+  const progress = (n) => { pageState.bulk[key] = `${n}/${rows.length}`; renderRunning(page); };
+  let confirmed = false;
+  progress(0);
+  try {
+    for (const [i, row] of rows.entries()) {
+      let [r, j] = await post(row, confirmed);
+      if (r.status === 428 && j.needsConfirm) {
+        const more = rows.length - 1;
+        const opts = confirmOpts(a, j);
+        if (more) opts.command += `\n… and ${more} more, once per checked row`;
+        if (!(await confirmRun(opts)).ok) return;
+        confirmed = true;
+        [r, j] = await post(row, true);
+      }
+      if (!j.ok) {
+        toast(`${a.label}: stopped at ${rowKeyOf(block, row)} (${i + 1}/${rows.length}) — ${j.error || 'failed'}`);
+        return;
+      }
+      progress(i + 1);
+    }
+    toast(`${a.label}: done on ${rows.length} row${rows.length === 1 ? '' : 's'}`);
+  } catch (e) {
+    toast(`${a.label} failed: ${e}`);
+  } finally {
+    delete pageState.bulk[key];
+    if (currentPage() === page) renderRunning(page);
+  }
 }
 
 // ---- toolbar -----------------------------------------------------------------
@@ -144,7 +247,7 @@ function renderPageBar(page) {
   pageEls.bar.innerHTML = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
     const key = itemKey(page, item);
     const busy = pageState.running.has(key);
-    const blocked = usesSelection(item) && !hasSelection;
+    const blocked = (usesSelection(item) && !hasSelection) || blockedByChecks(page, item);
     if (item.kind === 'toggle') {
       const st = pageState.toggles[key];
       const on = st?.ok && st.on;
@@ -155,7 +258,7 @@ function renderPageBar(page) {
         + `<span class="ext-sw"></span>${escapeHtml(item.label)} <span class="ext-state">${label}</span>`
         + (st?.ok && st.detail ? `<span class="ext-detail">${escapeHtml(st.detail)}</span>` : '') + '</button>';
     }
-    const title = blocked ? 'select a row first' : item.command;
+    const title = blocked ? (usesSelection(item) && !hasSelection ? 'select a row first' : `check a row in ${item.needsChecked} first`) : item.command;
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
       + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
   }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
@@ -189,10 +292,11 @@ async function refreshToggles(page) {
 
 // Run a toolbar item or row button. An item marked confirm: answers 428 with
 // the exact command (values filled in), the dialog's words and the preview
-// output; that is what the dialog shows. [frame] is the html block that asked for the run, if one did: its dialog
-// says so, and falls under that frame's limits (frameDialog). Resolves to the
+// output; that is what the dialog shows. [frame] is the html block that asked
+// for the run, if one did: its dialog says so, and falls under that frame's
+// limits (frameDialog). [quiet]: no toast when it succeeds. Resolves to the
 // run's answer, or {ok: false, error, busy | cancelled} when it didn't run.
-async function runItem(page, item, key, url, body, frame = null) {
+async function runItem(page, item, key, url, body, { frame = null, quiet = false } = {}) {
   if (pageState.running.has(key)) return { ok: false, busy: true, error: `${item.label} is already running` };
   pageState.running.add(key);
   renderRunning(page);
@@ -212,7 +316,7 @@ async function runItem(page, item, key, url, body, frame = null) {
       j = await r.json();
     }
     if (j.exitCode === undefined) toast(`${item.label}: ${j.error || 'failed'}`); // busy, no selection, unknown
-    else finishRun(page, item, key, j);
+    else finishRun(page, item, key, j, quiet);
     return j;
   } catch (e) {
     toast(`${item.label} failed: ${e}`);
@@ -233,10 +337,10 @@ function renderRunning(page) {
   }
 }
 
-function finishRun(page, item, key, run) {
+function finishRun(page, item, key, run, quiet) {
   pageState.last[page.id] = run;
   if (run.state) pageState.toggles[key] = run.state;
-  toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
+  if (!(quiet && run.ok)) toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
   if (item.openUrl && run.ok) refreshShot(); // the server already waited for the app to settle
   else if (run.then?.ok) scheduleRefresh(); // reloaded: show the new screen
 }
@@ -394,7 +498,14 @@ async function loadBlock(page, block, after = []) {
   }
   if (pageState.data[key] !== entry) return; // a newer fetch took over
   pageState.data[key] = { result, query };
+  if (block.check && !block.check.column && result.ok && pageState.checked[key]) {
+    // A row that's gone is no longer checked.
+    const keys = new Set(result.rows.map(r => rowKeyOf(block, r)));
+    const kept = pageState.checked[key].filter(k => keys.has(k));
+    if (kept.length !== pageState.checked[key].length) { pageState.checked[key] = kept; savePagePrefs(); }
+  }
   renderBlockData(page, block);
+  if (block.check) renderRunning(page); // buttons that need a checked row
   if (block.id !== page.selection) return;
   renderPageBar(page); // buttons that need a pick
   // What follows the pick: blocks waiting on this answer, and any whose row vanished or changed.
@@ -426,6 +537,7 @@ function initList(page, block, el) {
   const key = blockKey(page, block);
   el.innerHTML = `<div class="blk-head"><span class="name">${escapeHtml(block.title)}</span>`
     + `<span class="cmd" title="${escapeHtml(block.command)}">${escapeHtml(block.command)}</span>`
+    + (block.check ? '<span class="checks" data-checks></span>' : '')
     + `<span class="meta count" data-count></span>`
     + `<input class="blk-search" type="text" placeholder="filter…" autocomplete="off" spellcheck="false" /></div>`
     + '<div class="blk-scroll" data-rows></div>';
@@ -473,6 +585,7 @@ function renderListRows(page, block) {
   const host = el.querySelector('[data-rows]');
   const rows = entry?.result?.ok ? entry.result.rows : null;
   el.classList.toggle('loading', !!entry?.loading);
+  renderChecksHead(page, block, el);
   if (!rows) { host.innerHTML = blockNote(page, block, entry); el.querySelector('[data-count]').textContent = ''; return; }
   const cols = listColumns(block, rows);
   const filter = (pageState.search[key] || '').toLowerCase();
@@ -481,24 +594,42 @@ function renderListRows(page, block) {
   const picked = selectable ? pageState.selected[page.id] : undefined;
   el.querySelector('[data-count]').textContent = filter ? `${shown.length} / ${rows.length}` : `${rows.length}`;
   const actions = block.rowActions;
+  const checked = block.check ? checkedKeys(page, block) : null;
+  const checking = block.check && pageState.running.has(`${page.id}.${block.id}.check`);
+  const shownChecked = checked ? shown.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
+  const checkAll = checked
+    ? `<th class="lst-check"><input type="checkbox" data-check-all title="check all shown"${shown.length && shownChecked === shown.length ? ' checked' : ''}${checking || !shown.length ? ' disabled' : ''} /></th>` : '';
   host.innerHTML = rows.length
-    ? `<table class="lst"><thead><tr>${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th></th>' : ''}</tr></thead><tbody>`
+    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th></th>' : ''}</tr></thead><tbody>`
       + shown.map((r) => {
         const rk = rowKeyOf(block, r);
         return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
+          + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
           + cols.map(c => `<td>${cellHtml(r[c.key], c.format)}</td>`).join('')
           + (actions.length ? `<td class="row-actions">${actions.map(a => {
             const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
-            return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(a.command)}">${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+            const blocked = blockedByChecks(page, a);
+            const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
+            return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
           }).join('')}</td>` : '')
           + '</tr>';
       }).join('') + '</tbody></table>'
       + (entry.result.truncated ? `<div class="ext-empty">first ${rows.length} of ${entry.result.truncated} rows</div>` : '')
     : '<div class="ext-empty">no rows</div>';
   const byKey = new Map(shown.map(r => [rowKeyOf(block, r) ?? '', r]));
+  const all = host.querySelector('[data-check-all]');
+  if (all) {
+    all.indeterminate = shownChecked > 0 && shownChecked < shown.length;
+    all.onclick = (e) => { e.preventDefault(); setChecked(page, block, shown, shownChecked < shown.length); };
+  }
   host.querySelectorAll('tr[data-row]').forEach(tr => {
     const row = byKey.get(tr.dataset.row);
     if (selectable) tr.onclick = () => select(page, block, row);
+    const box = tr.querySelector('[data-check]');
+    if (box) {
+      box.parentElement.onclick = (e) => e.stopPropagation(); // checking a row doesn't pick it
+      box.onclick = (e) => { e.preventDefault(); setChecked(page, block, [row], !checked.has(rowKeyOf(block, row))); };
+    }
     tr.querySelectorAll('[data-action]').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation(); // a row button runs on its row; it doesn't change the pick
@@ -508,6 +639,22 @@ function renderListRows(page, block) {
           runValues(page, row));
       };
     });
+  });
+}
+
+// The head of a check: list — how many are checked, and its bulk buttons.
+function renderChecksHead(page, block, el) {
+  const host = el.querySelector('[data-checks]');
+  if (!host) return;
+  const n = checkedRows(page, block).length;
+  host.innerHTML = `<span class="muted">${n} checked</span>` + block.rowActions.filter(a => a.bulk).map(a => {
+    const progress = pageState.bulk[`${page.id}.${block.id}.${a.id}`];
+    return `<button class="${a.confirm ? 'warnish' : ''}${progress ? ' busy' : ''}" data-bulk="${escapeHtml(a.id)}"`
+      + ` title="${escapeHtml(`once per checked row: ${a.command}`)}"${n && !progress ? '' : ' disabled'}>`
+      + `${escapeHtml(a.label)} · ${progress ? escapeHtml(progress) : n}</button>`;
+  }).join('');
+  host.querySelectorAll('[data-bulk]').forEach(btn => {
+    btn.onclick = () => runBulk(page, block, block.rowActions.find(a => a.id === btn.dataset.bulk));
   });
 }
 
@@ -779,8 +926,8 @@ async function frameRun(page, block, id, input) {
   const j = own
     ? await runItem(page, own, `${page.id}.${block.id}.${own.id}`,
       `/api/pages/${pid}/frames/${encodeURIComponent(block.id)}/${encodeURIComponent(own.id)}`,
-      { ...runValues(page), input: frameInput(block, input) }, block)
-    : await runItem(page, item, itemKey(page, item), `/api/pages/${pid}/run/${encodeURIComponent(item.id)}`, runValues(page), block);
+      { ...runValues(page), input: frameInput(block, input) }, { frame: block })
+    : await runItem(page, item, itemKey(page, item), `/api/pages/${pid}/run/${encodeURIComponent(item.id)}`, runValues(page), { frame: block });
   return {
     ok: !!j.ok,
     exitCode: j.exitCode ?? null,
@@ -835,8 +982,10 @@ function renderFormButtons(page, block) {
   if (!host) return;
   host.innerHTML = block.actions.map(a => {
     const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+    const blocked = blockedByChecks(page, a);
+    const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
     return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}"`
-      + ` title="${escapeHtml(a.command)}">${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
   }).join('');
   host.querySelectorAll('[data-action]').forEach(btn => {
     btn.onclick = () => {

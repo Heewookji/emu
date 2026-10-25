@@ -10,11 +10,12 @@
 /// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows, a diff's patch, an html block's data
 /// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 ///
-/// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}, "input": {…}}`;
-/// an unconfirmed run of a `confirm:` action answers 428 with the dialog —
-/// `command`, `confirm: {title, message?, danger, button}` and the `preview`
-/// output, if it has one — and runs nothing but that preview.
-/// GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
+/// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}, "input": {…},
+/// "checked": […] | {"<list>": […]}}` — checked rows as objects, or as their
+/// keys (looked up in the list); an unconfirmed run of a `confirm:` action
+/// answers 428 with the dialog — `command`, `confirm: {title, message?, danger,
+/// button}` and the `preview` output, if it has one — and runs nothing but that
+/// preview. GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
 /// placeholders of commands from the config. A run's answer carries `data`
 /// too when its stdout is JSON, for an html block's `emu.run`.
 ///
@@ -162,23 +163,27 @@ Object? stdoutJson(String stdout) {
 /// Placeholder values carried by a request: `selected`/`row`/`input` maps and
 /// `seg` in a JSON body, or `selected.<col>=…`/`seg=…` in a query.
 Map<String, String> placeholderValues({Map? body, Map<String, String>? query}) {
-  String? str(Object? v) => v == null ? null : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
   final out = <String, String>{};
   for (final kind in ['selected', 'row', 'input']) {
     final m = body?[kind];
     if (m is! Map) continue;
-    m.forEach((k, v) {
-      final s = str(v);
-      if (s != null) out['$kind.$k'] = s;
-    });
+    _stringMap(m).forEach((k, v) => out['$kind.$k'] = v);
   }
-  final seg = str(body?['seg']);
+  final seg = _str(body?['seg']);
   if (seg != null) out['seg'] = seg;
   query?.forEach((k, v) {
     if (k.startsWith('selected.') || k == 'seg') out[k] = v;
   });
   return out;
 }
+
+String? _str(Object? v) => v == null ? null : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
+
+/// A row's values as placeholder text; null values are left out.
+Map<String, String> _stringMap(Map m) => {
+      for (final e in m.entries)
+        if (_str(e.value) case final s?) '${e.key}': s,
+    };
 
 class PagesApi {
   PagesApi({
@@ -289,7 +294,10 @@ class PagesApi {
             final what = switch (parts[3]) { 'rows' => 'row action', 'forms' => 'form action', _ => 'html block action' };
             return _json({'ok': false, 'error': 'no $what "${parts[4]}.${parts[5]}" on page ${page.id}'}, status: 404);
           }
-          return _run(page, action, itemId: '${block!.id}.${action.id}', vars: vars, confirmed: confirmed);
+          final itemId = '${block!.id}.${action.id}';
+          final checked = await _checked(page, action, '${page.id}.$itemId', body['checked'], vars);
+          if (checked.$2 case final refusal?) return _json(refusal, status: 400);
+          return _run(page, action, itemId: itemId, vars: vars, checked: checked.$1!, confirmed: confirmed);
         }
         final vars = placeholderValues(body: body);
         final item = page.item(parts[4]);
@@ -299,7 +307,14 @@ class PagesApi {
             'error': 'no item "${parts[4]}" on page ${page.id} (${page.toolbar.map((i) => i.id).join(', ')})',
           }, status: 404);
         }
-        return _run(page, item, itemId: item.id, vars: vars, confirmed: confirmed, on: body['on'] as bool?);
+        var checked = const <String, List<Map<String, String>>>{};
+        if (item is PageAction) {
+          final r = await _checked(page, item, '${page.id}.${item.id}', body['checked'], vars);
+          if (r.$2 case final refusal?) return _json(refusal, status: 400);
+          checked = r.$1!;
+        }
+        return _run(page, item,
+            itemId: item.id, vars: vars, checked: checked, confirmed: confirmed, on: body['on'] as bool?);
       default:
         return _json({'ok': false, 'error': 'not found'}, status: 404);
     }
@@ -317,7 +332,11 @@ class PagesApi {
   }
 
   Future<Response> _run(DashboardPage page, ToolbarItem item,
-      {required String itemId, required Map<String, String> vars, required bool confirmed, bool? on}) async {
+      {required String itemId,
+      required Map<String, String> vars,
+      Map<String, List<Map<String, String>>> checked = const {},
+      required bool confirmed,
+      bool? on}) async {
     final key = '${page.id}.$itemId';
     final PageCommand declared;
     switch (item) {
@@ -329,7 +348,7 @@ class PagesApi {
     }
     final PageCommand command;
     try {
-      command = declared.fill(vars);
+      command = declared.fill(vars, checked: checked, checkList: page.checkList);
     } on MissingValue catch (e) {
       return _json(_needs(key, e), status: 400);
     }
@@ -342,9 +361,10 @@ class PagesApi {
       final String title;
       final PageCommand? preview;
       try {
-        title = ConfirmSpec.fillText(confirm.title ?? 'Run “${item.label}”?', vars);
-        message = confirm.message == null ? null : ConfirmSpec.fillText(confirm.message!, vars);
-        preview = confirm.preview?.fill(vars);
+        String text(String t) => ConfirmSpec.fillText(t, vars, checked: checked, checkList: page.checkList);
+        title = text(confirm.title ?? 'Run “${item.label}”?');
+        message = confirm.message == null ? null : text(confirm.message!);
+        preview = confirm.preview?.fill(vars, checked: checked, checkList: page.checkList);
       } on MissingValue catch (e) {
         return _json(_needs(key, e), status: 400);
       }
@@ -409,9 +429,86 @@ class PagesApi {
           'selected' => '$key uses {{${e.key}}} — select a row first',
           'row' => '$key uses {{${e.key}}} — the row has no such column',
           'input' => '$key uses {{${e.key}}} — fill in that field',
+          'checked' => '$key uses {{${e.key}}} — a checked row has no such column',
           _ => '$key uses {{${e.key}}} — no value given',
         },
       };
+
+  /// The checked rows of the lists [action] reads or needs, by list id; or
+  /// the refusal to answer with. They come from the request — rows from the
+  /// dashboard, or keys (`emu run --checked`) looked up in the list's rows —
+  /// or, when the tool keeps the state (`check.column`), from the list itself.
+  Future<(Map<String, List<Map<String, String>>>?, Map<String, dynamic>?)> _checked(
+      DashboardPage page, PageAction action, String key, Object? raw, Map<String, String> vars) async {
+    Map<String, dynamic> refuse(String error, [String? needs]) => {'ok': false, 'needs': ?needs, 'error': '$key: $error'};
+    final lists = page.checkedListsOf(action);
+    if (lists.isEmpty) return (const <String, List<Map<String, String>>>{}, null);
+    final given = <String, List>{};
+    switch (raw) {
+      case null:
+        break;
+      case List():
+        // The page's one list the dashboard keeps checks for (check: true).
+        final own = page.checkLists.where((b) => b.check!.column == null).toList();
+        if (own.length != 1) return (null, refuse('say which list the checked rows are of: {"<list>": […]}'));
+        given[own.single.id] = raw;
+      case Map():
+        for (final e in raw.entries) {
+          if (e.value is! List) return (null, refuse('checked.${e.key}: expected a list of rows or keys'));
+          given['${e.key}'] = e.value as List;
+        }
+      default:
+        return (null, refuse('checked: expected a list of rows or keys'));
+    }
+    final out = <String, List<Map<String, String>>>{};
+    for (final id in lists) {
+      final list = page.block(id);
+      if (list is! ListBlock || list.check == null) return (null, refuse('no list "$id" with check: on page ${page.id}'));
+      final items = given[id] ?? const [];
+      final column = list.check!.column;
+      if (column == null && items.every((e) => e is Map)) {
+        out[id] = [for (final e in items) _stringMap(e as Map)];
+        continue;
+      }
+      // Keys to look up, or the tool's own state: the list's rows are needed.
+      final (rows, error) = await _listRows(page, list, vars);
+      if (rows == null) return (null, refuse(error!));
+      if (column != null) {
+        out[id] = [for (final r in rows) if (isCheckedValue(r[column])) _stringMap(r)];
+        continue;
+      }
+      final byKey = {for (final r in rows) ?list.rowKey(r): r};
+      final picked = <Map<String, String>>[];
+      for (final k in items) {
+        final row = byKey[_str(k)];
+        if (row == null) return (null, refuse('no row "${_str(k)}" in ${list.id}', 'checked'));
+        picked.add(_stringMap(row));
+      }
+      out[id] = picked;
+    }
+    if (action.needsChecked case final id? when out[id]!.isEmpty) {
+      // The tool's own checks change only through its toggle.
+      return (page.block(id) as ListBlock).check!.column == null
+          ? (null, refuse('check a row in $id first', 'checked'))
+          : (null, refuse('check a row in $id first — its toggle: emu run ${page.id}.$id.check --row <col>=<value>'));
+    }
+    return (out, null);
+  }
+
+  /// A list's rows, run as the block would be; or why not.
+  Future<(List<Map<String, dynamic>>?, String?)> _listRows(
+      DashboardPage page, ListBlock list, Map<String, String> vars) async {
+    final PageCommand command;
+    try {
+      command = list.run.fill(vars);
+    } on MissingValue catch (e) {
+      return (null, '${_needs('${page.id}.${list.id}', e)['error']}');
+    }
+    final run = await execute(page.id, list.id, command, defaultTimeout);
+    if (!run.commandOk) return (null, '${list.id}: ${run.error}: ${_clip(run.output)}');
+    final rows = parseListRows(run.stdout);
+    return rows == null ? (null, '${list.id}: the list command should print a JSON array of objects') : (rows, null);
+  }
 
   Future<Map<String, dynamic>> _state(DashboardPage page, PageToggle toggle, Map<String, String> vars) async {
     final PageCommand command;

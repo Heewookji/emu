@@ -903,6 +903,42 @@ pages:
   diff block, a JSON array of objects as a table, anything else as text; a failed preview
   (non-zero exit, timeout) shows its output and keeps Run disabled. An unknown key or a
   wrong type is a config problem, listed by `emu pages`.
+- **Checked rows.** `check: true` on a list adds a checkbox column with check-all and a count;
+  the picked row (`selected`) stays the one the other blocks follow, the checked rows are for
+  doing one thing to many:
+
+  ```yaml
+  - list:
+      id: templates
+      run: [./tool/tpl.sh, list, --json]
+      key: name
+      check: true
+      rowActions:
+        - action: { id: push, run: [./tool/tpl.sh, push, "{{row.name}}"], bulk: true }
+  - form:
+      id: deploy
+      fields: [{ name: env, default: stage }]
+      actions:
+        - action:
+            id: stage
+            run: [./tool/tpl.sh, deploy, --env, "{{input.env}}", "{{checked.name...}}"]
+            needs: checked        # disabled while nothing is checked
+            confirm: true
+  ```
+
+  `{{checked.<col>...}}` must be a whole argument and becomes one argument per checked row
+  (`deploy a b c`; none when nothing is checked) — values are still never split or run.
+  `{{checked.<col>}}` is one comma-joined argument (`--names a,b,c`), `{{checked.count}}` the
+  number. They work in buttons (toolbar, row and form actions), and the last two in their
+  `confirm:` title and message too (`Deploy {{checked.count}} templates?`). With more than one `check:`
+  list on a page, say which: `{{templates.checked.name...}}`, `needs: templates.checked`.
+  The dashboard keeps the checked keys per browser and drops those a fresh fetch no longer
+  lists. When the tool keeps the state itself (shared with the CLI or other tabs), use
+  `check: {column: upload, toggle: [./tool/tpl.sh, pick, --toggle, "{{row.name}}"]}`: a row is
+  checked when its `upload` value is true/yes/on/1/checked, and a click runs `toggle` on that
+  row and fetches the list again. A row action with `bulk: true` also gets a button in the
+  list's head that runs it once per checked row, in turn, stopping at the first failure (a
+  `confirm: true` one asks once).
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row and segment are remembered
   per browser.
@@ -1019,6 +1055,8 @@ emu run templates.publish --select name=home_banner         # confirm: prints th
 emu run links.routes.open --row route=home        # a row button, as if pressed on that row
 emu run links.link.open --input url=myapp://home   # a form button with what's typed
 emu run deploy.view.plan --input env=stage         # an html block's own action, with its inputs:
+emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: rows of the check: true list, by key
+emu run tpl.picks.check --row name=home            # check.toggle runs as the row action "check"
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```
