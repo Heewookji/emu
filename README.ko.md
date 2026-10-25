@@ -782,7 +782,8 @@ pages:
 | `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
 | `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
-| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억 |
+| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
+| `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |
 | `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
@@ -813,6 +814,19 @@ pages:
           fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
           actions:
             - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
+- 늘 보이는 툴바에 두기 싫은 버튼(배포 등)은 `panel` 에 묶고 `note:` 로 무엇을 하는지 적는다.
+  `emu run <page>.<panel>.<action>` 으로 실행한다:
+
+  ```yaml
+      - panel:
+          id: deploy
+          title: 배포
+          area: left
+          note: stage·dev 는 원격 브랜치에 바로 push 합니다.
+          actions:
+            - action: { id: stage, label: stage 배포, run: [./tool/deploy, stage], confirm: true }
+            - action: { id: dev, label: dev 배포, run: [./tool/deploy, dev], confirm: true }
   ```
 - `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
   frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
