@@ -383,11 +383,22 @@ class FormField {
 
 /// Input fields and the buttons that use them: what's typed fills
 /// `{{input.<field>}}` in the [actions]. Values aren't stored by emu; the
-/// dashboard keeps them per browser.
+/// dashboard keeps them per browser. With no fields it's a button panel
+/// (`panel:` is the same block).
 class FormBlock extends PageBlock {
-  const FormBlock({required super.id, super.area = 'main', required this.title, required this.fields, required this.actions});
+  const FormBlock({
+    required super.id,
+    super.area = 'main',
+    required this.title,
+    this.note,
+    this.fields = const [],
+    required this.actions,
+  });
 
   final String title;
+
+  /// A line of text under the title: what the buttons do.
+  final String? note;
   final List<FormField> fields;
   final List<PageAction> actions;
 
@@ -399,6 +410,7 @@ class FormBlock extends PageBlock {
         'id': id,
         'area': area,
         'title': title,
+        'note': ?note,
         'fields': [for (final f in fields) f.toJson()],
         'actions': [for (final a in actions) a.toJson()],
       };
@@ -617,14 +629,14 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
 PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?, String) claim,
     List<String> problems, {required bool makesSelection}) {
   final (kind, m) = entry;
-  if (!const {'output', 'list', 'diff', 'html', 'form'}.contains(kind)) {
-    problems.add('$at: unknown block "$kind" (list, diff, html, form, output)');
+  if (!const {'output', 'list', 'diff', 'html', 'form', 'panel'}.contains(kind)) {
+    problems.add('$at: unknown block "$kind" (list, diff, html, form, panel, output)');
     return null;
   }
   final id = claim(m['id'] ?? kind, at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' || 'form' => 'main', _ => 'bottom' }}';
+  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' || 'form' || 'panel' => 'main', _ => 'bottom' }}';
   if (!blockAreas.contains(area)) {
     problems.add('$where: area must be left, main or bottom (got "$area")');
     return null;
@@ -638,7 +650,7 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     return OutputBlock(id: id, area: area);
   }
   final title = '${m['title'] ?? id}';
-  if (kind == 'form') return _parseForm(m, id, area, title, where, problems);
+  if (kind == 'form' || kind == 'panel') return _parseForm(m, id, area, title, where, problems, panel: kind == 'panel');
   final watch = _watch(m['watch'], '$where.watch', problems);
   if (watch == null) return null;
   if (kind == 'html') {
@@ -707,10 +719,21 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   );
 }
 
-FormBlock? _parseForm(Map m, String id, String area, String title, String where, List<String> problems) {
-  final rawFields = m['fields'];
-  if (rawFields is! List || rawFields.isEmpty) {
+/// A form; with no `fields` (or `panel:`, which takes none) just its buttons.
+FormBlock? _parseForm(Map m, String id, String area, String title, String where, List<String> problems,
+    {required bool panel}) {
+  final rawFields = m['fields'] ?? const [];
+  if (panel && m['fields'] != null) {
+    problems.add('$where.fields: a panel has no fields — make it a form to add some');
+    return null;
+  }
+  if (rawFields is! List) {
     problems.add('$where.fields: expected a list like [{name: url, label: URL}]');
+    return null;
+  }
+  final note = m['note'];
+  if (note != null && note is! String) {
+    problems.add('$where.note: expected a line of text');
     return null;
   }
   final fields = <FormField>[];
@@ -740,10 +763,10 @@ FormBlock? _parseForm(Map m, String id, String area, String title, String where,
     if (a != null) actions.add(a);
   }
   if (actions.isEmpty) {
-    problems.add('$where.actions: a form needs at least one action');
+    problems.add('$where.actions: a ${panel ? 'panel' : 'form'} needs at least one action');
     return null;
   }
-  return FormBlock(id: id, area: area, title: title, fields: fields, actions: actions);
+  return FormBlock(id: id, area: area, title: title, note: note as String?, fields: fields, actions: actions);
 }
 
 /// [program] is false for an openUrl, whose one argument is the URL itself.
@@ -788,6 +811,7 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
         'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
         'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
         'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
+        'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
         'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
         'selected' || 'row' || 'seg' || 'input' => null,
         _ => unknown,

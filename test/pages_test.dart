@@ -253,7 +253,6 @@ void main() {
               ],
             },
           },
-          {'form': {'id': 'nofields', 'actions': [{'action': {'id': 'a', 'run': ['x']}}]}},
           {'form': {'id': 'noactions', 'fields': [{'name': 'a'}]}},
           {'form': {'id': 'dup', 'fields': [{'name': 'a'}, {'name': 'a'}], 'actions': [{'action': {'id': 'a', 'run': ['x']}}]}},
           {'list': {'id': 'items', 'run': ['x'], 'rowActions': [{'action': {'id': 'go', 'openUrl': 'myapp://item/{{row.id}}'}}]}},
@@ -283,10 +282,59 @@ void main() {
         'p.link.both: give run or openUrl, not both',
         "p.link.then: then doesn't apply to openUrl",
         'p.link.nourl.openUrl: expected a URL',
-        'p.nofields.fields: expected a list',
         'p.noactions.actions: a form needs at least one action',
         'p.dup.fields[1]: needs a name of letters, digits, - or _, unique in this form',
         "p.bad.run: {{input.*}} only works in a form's actions",
+      ]) {
+        expect(all, contains(expected));
+      }
+    });
+
+    test('a form without fields is a button panel; panel: says so, note: explains it', () {
+      final run = {'action': {'id': 'a', 'run': ['x']}};
+      final c = parse([
+        {'form': {'id': 'nofields', 'actions': [run]}},
+        {'form': {'id': 'empty', 'fields': [], 'note': 'no input', 'actions': [run]}},
+        {
+          'panel': {
+            'id': 'deploy',
+            'title': 'Deploy',
+            'area': 'left',
+            'note': 'stage and dev push straight to the remote branch.',
+            'actions': [
+              {'action': {'id': 'stage', 'run': ['./tool/deploy', 'stage', '{{selected.name}}'], 'confirm': true}},
+              {'action': {'id': 'typo', 'run': ['./tool/deploy', '{{input.msg}}']}},
+            ],
+          },
+        },
+        {'panel': {'id': 'typed', 'actions': [{'action': {'id': 'a', 'run': ['x', '{{input.msg}}']}}]}},
+        {'panel': {'id': 'withfields', 'fields': [{'name': 'msg'}], 'actions': [run]}},
+        {'panel': {'id': 'noactions'}},
+        {'form': {'id': 'badnote', 'note': ['x'], 'actions': [run]}},
+        {'form': {'id': 'badfields', 'fields': 'msg', 'actions': [run]}},
+      ]);
+      final page = c.page('p')!;
+      expect(page.blocks.map((b) => b.id), ['nofields', 'empty', 'deploy']);
+      final deploy = page.block('deploy') as FormBlock;
+      expect(deploy.area, 'left');
+      expect(deploy.fields, isEmpty);
+      expect(deploy.actions.map((a) => a.id), ['stage']);
+      expect(deploy.toJson(), allOf(
+        containsPair('kind', 'form'),
+        containsPair('note', 'stage and dev push straight to the remote branch.'),
+        containsPair('fields', isEmpty),
+      ));
+      expect((page.block('nofields') as FormBlock).toJson().containsKey('note'), isFalse);
+      expect((page.block('empty') as FormBlock).note, 'no input');
+      expect((page.block('nofields') as FormBlock).area, 'main');
+      final all = c.problems.join('\n');
+      for (final expected in [
+        'p.deploy.typo.run: no field "msg" — this form has no fields',
+        'p.typed.a.run: no field "msg" — this form has no fields',
+        'p.withfields.fields: a panel has no fields — make it a form to add some',
+        'p.noactions.actions: a panel needs at least one action',
+        'p.badnote.note: expected a line of text',
+        'p.badfields.fields: expected a list',
       ]) {
         expect(all, contains(expected));
       }

@@ -31,6 +31,11 @@ pages:
           actions:
             - action: { id: open, openUrl: "{{input.url}}", confirm: true }
             - action: { id: echo, run: [./tool/t.sh, args, "{{input.url}}", "{{input.note}}"] }
+      - panel:
+          id: deploy
+          note: pushes to the remote branch
+          actions:
+            - action: { id: stage, run: [./tool/t.sh, args, stage, "{{selected.name}}"], confirm: true }
       - diff:
           id: changes
           run: [./tool/t.sh, diff, "{{selected.name}}", "{{seg}}"]
@@ -224,6 +229,20 @@ void main() {
     expect(code, 200);
     expect(j['item'], 'link.echo');
     expect(j['output'], '[myapp://x?a=1&b=2]\n[two words; \$(id)]\n');
+  });
+
+  test('a panel (a form with no fields) runs its buttons like a form, under forms/', () async {
+    var (code, j) = await call('GET', '/api/pages');
+    final deploy = ((j['pages'] as List).first['blocks'] as List).firstWhere((b) => b['id'] == 'deploy');
+    expect(deploy, allOf(containsPair('kind', 'form'), containsPair('note', 'pushes to the remote branch')));
+    expect(deploy['fields'], isEmpty);
+
+    (code, j) = await call('POST', '/api/pages/tpl/forms/deploy/stage', {'selected': {'name': 'card'}});
+    expect(code, 428); // confirm: true
+    (code, j) = await call('POST', '/api/pages/tpl/forms/deploy/stage', {'selected': {'name': 'card'}, 'confirmed': true});
+    expect(code, 200);
+    expect(j['item'], 'deploy.stage');
+    expect(j['output'], '[stage]\n[card]\n');
   });
 
   test('openUrl opens the filled-in link on the device and reports it like a run', () async {

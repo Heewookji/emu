@@ -667,7 +667,8 @@ window.addEventListener('message', (e) => {
 });
 
 // form: fields and the buttons that use them. What's typed fills
-// {{input.<field>}} server-side and is kept per browser.
+// {{input.<field>}} server-side and is kept per browser. With no fields
+// (a panel) it's the title, an optional note and the buttons.
 function formValues(page, block) {
   const saved = pageState.input[blockKey(page, block)] || {};
   return Object.fromEntries(block.fields.map(f => [f.name, saved[f.name] ?? f.default ?? '']));
@@ -678,6 +679,7 @@ function initForm(page, block, el) {
   const values = formValues(page, block);
   const fieldId = (f) => `f-${page.id}-${block.id}-${f.name}`;
   el.innerHTML = `<div class="blk-head"><span class="name">${escapeHtml(block.title)}</span></div>`
+    + (block.note ? `<div class="form-note">${escapeHtml(block.note)}</div>` : '')
     + '<div class="form-grid">'
     + block.fields.map(f => `<label for="${escapeHtml(fieldId(f))}">${escapeHtml(f.label)}</label>`
       + `<input class="field" id="${escapeHtml(fieldId(f))}" data-field="${escapeHtml(f.name)}" type="text"`

@@ -139,7 +139,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm: true` 항목은 `--yes` 가
   있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
-  form 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+  form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
 - `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의
   API 목업. 시나리오를 바꿔 가며 앱이 빈 목록·오류·지연 응답을 받을 때의 화면을 확인한다(재시작 불필요).
   `mock log [--bodies]` 로 앱이 실제로 보낸 요청과 목업 여부를 본다.

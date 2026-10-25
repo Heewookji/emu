@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Added
+- 대시보드 페이지 블록 `panel` — 입력 칸 없는 form(버튼 패널). 툴바에 두기 싫은 버튼(배포 등)을 영역 안에 묶는다.
+  `form` 도 `fields` 를 빼거나 `[]` 로 둘 수 있고, 그때 버튼의 `{{input.*}}` 는 설정 오류. form·panel 의 `note:` 는
+  제목 아래 설명 한 줄. `emu pages` 는 입력 칸 없는 form 을 `panel` 로, note 를 함께 보여 준다 (#48).
+
 ## [0.14.0] - 2026-10-23
 
 ### Added

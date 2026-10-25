@@ -856,7 +856,8 @@ pages:
 | `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
 | `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
-| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser |
+| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
+| `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
 | `output` | — | The page's last run: command, exit code, time, output |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
@@ -892,6 +893,19 @@ pages:
           fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
           actions:
             - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
+- Buttons that shouldn't sit in the always-visible toolbar (a deploy, say) go in a `panel`,
+  with a `note:` saying what they do. `emu run <page>.<panel>.<action>` runs one:
+
+  ```yaml
+      - panel:
+          id: deploy
+          title: Deploy
+          area: left
+          note: stage and dev push straight to the remote branch.
+          actions:
+            - action: { id: stage, label: deploy stage, run: [./tool/deploy, stage], confirm: true }
+            - action: { id: dev, label: deploy dev, run: [./tool/deploy, dev], confirm: true }
   ```
 - An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
   frame with its own opaque origin and no network (`default-src 'none'`): it can't read the

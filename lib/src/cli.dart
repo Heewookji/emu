@@ -2171,12 +2171,16 @@ Future<int> _pagesCmd(List<String> args) async {
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
       final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
-      print('  ${col('block', 7)}${col(b['id'], 16)}${col('${b['kind']} (${b['area']})', 16)}${b['command'] ?? ''}$segs'.trimRight());
+      // A form with no fields is a button panel.
+      final kind = b['kind'] == 'form' && (b['fields'] as List).isEmpty ? 'panel' : b['kind'];
+      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs'.trimRight());
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
         print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
       }
       if (b['kind'] == 'form') {
-        print('  ${col('  field', 7)}${[for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']].join(', ')}');
+        if (b['note'] != null) print('  ${col('  note', 7)}${b['note']}');
+        final fields = [for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']];
+        if (fields.isNotEmpty) print('  ${col('  field', 7)}${fields.join(', ')}');
         for (final a in (b['actions'] as List).cast<Map<String, dynamic>>()) {
           print('  ${col('  form', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
               '${a['confirm'] == true ? '   (asks first)' : ''}');
@@ -2266,7 +2270,7 @@ Future<int> _runCmd(List<String> args) async {
     ];
     final kind = blocks.where((b) => b['id'] == target[1]).firstOrNull?['kind'];
     if (kind != 'list' && kind != 'form') {
-      stderr.writeln('✗ no list or form "${target[1]}" on page ${target[0]}');
+      stderr.writeln('✗ no list, form or panel "${target[1]}" on page ${target[0]}');
       return 1;
     }
     path = '/api/pages/$page/${kind == 'list' ? 'rows' : 'forms'}/'

@@ -340,7 +340,8 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 10px; align-items: center; padding: 12px; font-size: 12px; }
 .form-grid label { color: var(--muted); }
 .form-grid .field { font-family: "SF Mono", Menlo, monospace; }
-.form-actions { grid-column: 1 / -1; display: flex; gap: 6px; }
+.form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.form-note { padding: 10px 12px 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 
 /* Mocks tab (mocks.js): scenarios | rule editor over traffic. */
 .mocks {
