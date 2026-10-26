@@ -47,6 +47,7 @@ const pageState = {
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
   folded: {},            // page id → the areas folded to a strip
+  foldedBlocks: {},      // page id → the blocks folded to their head
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -61,12 +62,13 @@ try {
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
   if (prefs.folded && typeof prefs.folded === 'object') pageState.folded = prefs.folded;
+  if (prefs.foldedBlocks && typeof prefs.foldedBlocks === 'object') pageState.foldedBlocks = prefs.foldedBlocks;
 } catch (_) {}
 function savePagePrefs() {
   try {
     localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
       selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
-      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded,
+      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded, foldedBlocks: pageState.foldedBlocks,
     }));
   } catch (_) {}
 }
@@ -316,7 +318,9 @@ function renderPageBar(page) {
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
       + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`
       + (item.auto ? autoSwitchHtml(page, item) : '');
-  }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  }).join('') + '<span class="grow"></span>'
+    + '<button id="pages-unfold" title="Unfold every folded area and block of this page" hidden>unfold all</button>'
+    + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -330,6 +334,8 @@ function renderPageBar(page) {
     };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
+  document.getElementById('pages-unfold').onclick = () => unfoldAll(page);
+  renderUnfoldAll(page);
   pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
 }
 
@@ -512,7 +518,6 @@ function renderPageBody(page) {
     ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}">`
       + (areas[a].length ? areaFoldHtml(a, areas[a]) : '') + '</div>').join('')
     : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
-  applyAreas(page);
   body.querySelectorAll('[data-fold-area]').forEach(b => { b.onclick = () => foldArea(page, b.dataset.foldArea); });
   body.querySelectorAll('[data-unfold-area]').forEach(b => { b.onclick = () => unfoldArea(page, b.dataset.unfoldArea); });
   for (const [area, blocks] of Object.entries(areas)) {
@@ -525,23 +530,33 @@ function renderPageBody(page) {
       else if (b.kind === 'html') initHtml(page, b, el);
       else if (b.kind === 'form') initForm(page, b, el);
       else if (b.kind === 'output') initOutput(page, b, el);
+      addBlockFold(page, b, el);
     }
   }
+  applyFolds(page);
   addResizers(page, areas);
   renderOutputs(page);
 }
 
-// ---- folded areas --------------------------------------------------------------
+// ---- folding -------------------------------------------------------------------
 // Each area with blocks folds (the chevron in its first block's head) to a
 // strip of its blocks' titles, and the others take its room; a click on the
-// strip unfolds it in place. Kept per page. The last unfolded area doesn't
-// fold. A folded area's blocks keep the pick and checks: those lists are
-// still fetched, the rest when it unfolds.
+// strip unfolds it in place. The last unfolded area doesn't fold. A block
+// folds to its head (the caret before its name) and the others in its area
+// take its room. The page bar's "unfold all" unfolds every area and block of
+// the page. Kept per page. What's folded isn't fetched until it unfolds —
+// except the lists that hold the pick and the checks — and an output folded
+// to its head keeps only the head up to date.
 
 // [fold, unfold] chevrons: toward where the area goes, and back.
 const FOLD_ICONS = { left: ['‹', '›'], main: ['⌃', '⌄'], bottom: ['⌄', '⌃'] };
 
 function areaFolded(page, area) { return (pageState.folded[page.id] || []).includes(area); }
+
+function blockFolded(page, block) { return (pageState.foldedBlocks[page.id] || []).includes(block.id); }
+
+// In a folded area, or folded to its head.
+function outOfSight(page, block) { return areaFolded(page, block.area) || blockFolded(page, block); }
 
 function areasWithBlocks(page) { return ['left', 'main', 'bottom'].filter(a => page.blocks.some(b => b.area === a)); }
 
@@ -552,9 +567,19 @@ function areaFoldHtml(area, blocks) {
     + `<span class="fold-icon">${FOLD_ICONS[area][1]}</span><span class="fold-titles">${escapeHtml(titles)}</span></button>`;
 }
 
+// The caret before a block's name: folds it to its head, and back.
+function addBlockFold(page, block, el) {
+  const head = el.querySelector('.blk-head');
+  if (!head) return;
+  head.insertAdjacentHTML('afterbegin', '<button class="blk-fold" data-fold-block></button>');
+  head.firstElementChild.onclick = () => (blockFolded(page, block) ? unfoldBlock(page, block) : foldBlock(page, block));
+}
+
 // The grid follows what's folded: the left area folds to an upright strip,
 // main and bottom to a bar — or, both folded, the right column to a strip.
-function applyAreas(page) {
+// When main or bottom has only folded blocks, it takes their heads' height
+// and the other one the rest.
+function applyFolds(page) {
   const body = pageEls.body;
   const used = areasWithBlocks(page);
   const folded = (a) => used.includes(a) && areaFolded(page, a);
@@ -573,14 +598,34 @@ function applyAreas(page) {
   body.classList.toggle('fold-right', rightFolded);
   body.classList.toggle('fold-main', folded('main') && !rightFolded);
   body.classList.toggle('fold-bottom', folded('bottom') && !rightFolded);
+  const both = right.length === 2 && !folded('main') && !folded('bottom');
+  const heads = (a) => page.blocks.every(b => b.area !== a || blockFolded(page, b));
+  body.classList.toggle('heads-bottom', both && heads('bottom'));
+  body.classList.toggle('heads-main', both && heads('main') && !heads('bottom'));
   const unfolded = used.filter(a => !folded(a));
   body.querySelectorAll('[data-fold-area]').forEach(b => { b.hidden = unfolded.length < 2; });
+  for (const b of page.blocks) {
+    const el = blockEl(b);
+    const caret = el?.querySelector('[data-fold-block]');
+    if (!caret) continue;
+    const f = blockFolded(page, b);
+    el.classList.toggle('folded', f);
+    caret.textContent = f ? '▸' : '▾';
+    caret.title = f ? 'Unfold' : 'Fold to its head';
+  }
+  renderUnfoldAll(page);
+}
+
+// The page bar's "unfold all": there while an area or a block of the page is folded.
+function renderUnfoldAll(page) {
+  const btn = document.getElementById('pages-unfold');
+  if (btn) btn.hidden = !areasWithBlocks(page).some(a => areaFolded(page, a)) && !page.blocks.some(b => blockFolded(page, b));
 }
 
 function foldArea(page, area) {
   pageState.folded[page.id] = [...new Set([...(pageState.folded[page.id] || []), area])];
   savePagePrefs();
-  applyAreas(page);
+  applyFolds(page);
 }
 
 function unfoldArea(page, area) {
@@ -588,9 +633,35 @@ function unfoldArea(page, area) {
   if (folded.length) pageState.folded[page.id] = folded;
   else delete pageState.folded[page.id];
   savePagePrefs();
-  applyAreas(page);
-  // What it skipped while folded.
-  loadBlocks(page, page.blocks.filter(b => b.area === area && pageState.stale.has(blockKey(page, b))));
+  unfolded(page, page.blocks.filter(b => b.area === area));
+}
+
+function foldBlock(page, block) {
+  pageState.foldedBlocks[page.id] = [...new Set([...(pageState.foldedBlocks[page.id] || []), block.id])];
+  savePagePrefs();
+  applyFolds(page);
+}
+
+function unfoldBlock(page, block) {
+  const folded = (pageState.foldedBlocks[page.id] || []).filter(id => id !== block.id);
+  if (folded.length) pageState.foldedBlocks[page.id] = folded;
+  else delete pageState.foldedBlocks[page.id];
+  savePagePrefs();
+  unfolded(page, [block]);
+}
+
+function unfoldAll(page) {
+  delete pageState.folded[page.id];
+  delete pageState.foldedBlocks[page.id];
+  savePagePrefs();
+  unfolded(page, page.blocks);
+}
+
+// [blocks] may be in sight again: what they skipped while folded.
+function unfolded(page, blocks) {
+  applyFolds(page);
+  loadBlocks(page, blocks.filter(b => pageState.stale.has(blockKey(page, b))));
+  if (blocks.some(b => b.kind === 'output')) renderOutputs(page);
 }
 
 // ---- panel sizes ---------------------------------------------------------------
@@ -645,7 +716,10 @@ function addResizer(page, host, axis) {
 function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
 
 function renderOutputs(page) {
-  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) renderOutput(page, el); }
+  for (const b of page.blocks) {
+    const el = b.kind === 'output' && blockEl(b);
+    if (el) renderOutput(page, el, { head: outOfSight(page, b) });
+  }
 }
 
 // Fetch list rows / diff patches. A block that reads {{selected.*}} waits for
@@ -656,8 +730,8 @@ function loadBlocks(page, blocks) {
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
     if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
-    // A folded area is fetched when it unfolds — but the lists that hold the pick and the checks always are.
-    if (areaFolded(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
+    // A folded block is fetched when it unfolds — but the lists that hold the pick and the checks always are.
+    if (outOfSight(page, b) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
@@ -1315,7 +1389,8 @@ function postFrameData(page, block) {
 }
 
 // Requests from frames. Only a frame of the page on screen gets anything; one
-// left over from a page the dashboard moved away from is told so.
+// left over from a page the dashboard moved away from is told so, and so is
+// one folded out of sight — which still gets its data (emu:ready).
 window.addEventListener('message', async (e) => {
   const msg = e.data;
   const frame = [...pageEls.body.querySelectorAll('iframe.ext-frame')].find(f => f.contentWindow === e.source);
@@ -1328,7 +1403,10 @@ window.addEventListener('message', async (e) => {
   const page = currentPage();
   const block = page && !pageEls.body.hidden
     && page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe') === frame);
-  if (!block) { reply({ ok: false, value: null, error: 'this view is not on screen' }); return; }
+  if (!block || (msg.type !== 'emu:ready' && outOfSight(page, block))) {
+    reply({ ok: false, value: null, error: 'this view is not on screen' });
+    return;
+  }
   // A held confirm waits for its view's run only (frameRun); anything else lets it go.
   if (msg.type !== 'emu:run' && msg.type !== 'emu:action') endHold();
   switch (msg.type) {
@@ -1539,7 +1617,9 @@ function initOutput(page, block, el) {
   };
 }
 
-function renderOutput(page, el) {
+// [head]: the output is folded away — only its head (what runs, how long) is
+// drawn, the rest once it unfolds.
+function renderOutput(page, el, { head = false } = {}) {
   const busy = [...pageState.running].filter(k => k.startsWith(`${page.id}.`));
   const hist = pageState.history[page.id] || [];
   const viewing = pageState.viewing[page.id] ?? null;
@@ -1554,13 +1634,14 @@ function renderOutput(page, el) {
   // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
   const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
   const prev = el.dataset.shown || '';
-  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-  el.dataset.shown = id;
   if (liveKey) {
     cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
     cmd.title = '';
     const since = pageState.liveSince[liveKey];
     meta.textContent = since ? `${Math.round((Date.now() - since) / 1000)}s` : '';
+    if (head) return;
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+    el.dataset.shown = id;
     renderLive(pre, el, liveKey, prev === id);
     if (prev !== id) pre.scrollTop = pre.scrollHeight;
     else if (atEnd) pre.scrollTop = pre.scrollHeight;
@@ -1572,6 +1653,9 @@ function renderOutput(page, el) {
   cmd.textContent = `$ ${run.command}`;
   cmd.title = run.command;
   meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
+  if (head) return;
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+  el.dataset.shown = id;
   const body = stripAnsi(run.output);
   pre.innerHTML = body ? linkify(body) : '<span class="muted">(no output)</span>';
   el._live = null;

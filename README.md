@@ -885,7 +885,7 @@ pages:
 | `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
 | `auto` | Toolbar actions: also run on their own when project files change — `{watch: ["tpl/**"], debounce: 400, on: false}` (below) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. A folded area's blocks are fetched when it unfolds, except the lists that hold the pick and the checks |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. The caret before a block's name folds just that block to its head — an output's head still shows what runs and for how long — and the others in its area take its room; main or bottom with only folded blocks is as tall as their heads. The page bar's `unfold all` unfolds every folded area and block of the page. What's folded is fetched when it unfolds, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
@@ -1094,7 +1094,8 @@ pages:
   - Dialogs are drawn by the dashboard, outside the frame, headed with who asks
     (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`), and every text in them is shown as text,
     never as HTML. One dialog at a time: a request while one is open answers `busy`
-    (`false`/`null`). Only a frame of the page on screen gets answers.
+    (`false`/`null`). Only a frame on screen gets answers: on the page shown, and not folded away
+    (a folded one still gets its data).
   - `emu.confirm` is the view's own question; it doesn't stand in for `confirm:`. Such an
     action asks in the dashboard's own dialog with the exact command, also when a frame runs it —
     a frame can't send `confirmed`. Not twice, though:
