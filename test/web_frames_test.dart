@@ -128,7 +128,7 @@ const answer = (body) => onMessage({ source: parent, data: { type: 'emu:result',
   group("the dashboard's reading of a frame's request", skip: _node ? false : 'node is not installed', () {
     final prelude = [
       'const frameRefreshed = {}; const FRAME_REFRESH_MS = 1000; const blockKey = (page, block) => `\${page.id}.\${block.id}`;',
-      for (final f in ['clip', 'frameAsk', 'frameOptions', 'withAsk', 'pruneFrameRefreshed']) _fn(src, f),
+      for (final f in ['clip', 'frameAsk', 'frameOptions', 'withAsk', 'pruneFrameRefreshed', 'runAskOpts', 'runAskValue']) _fn(src, f),
     ].join('\n');
 
     test('choose options: values once, strings/numbers/booleans only, labels as text', () async {
@@ -181,6 +181,35 @@ const answer = (body) => onMessage({ source: parent, data: { type: 'emu:result',
           true, // a view can't make a danger run look safe
         ],
         'bare': ['', 'from emu.yaml'],
+      });
+    });
+
+    test("a running command's question: text cut to size, headed with its page and action", () async {
+      final r = await _js(prelude, '''
+        const confirm = runAskOpts({ page: 'tools', item: 'push', from: { page: 'Tools', action: 'Push' },
+          ask: { kind: 'confirm', title: 'x'.repeat(300), detail: 'a\\nb', danger: true, button: '<b>go</b>' } });
+        const prompt = runAskOpts({ page: 'tools', item: 'push', ask: { kind: 'prompt', fields: [{ name: 'm', default: 'hi' }, { label: 'no name' }] } });
+        const choose = runAskOpts({ page: 'tools', item: 'push', ask: { kind: 'choose', options: ['stage', 'prod'], multiple: false } });
+        return {
+          from: confirm.from, title: confirm.title.length, rest: [confirm.detail, confirm.danger, confirm.button],
+          fields: prompt.fields, prompt: [runAskValue('prompt', prompt, { ok: true, values: { m: 'yo' } }), runAskValue('prompt', prompt, { ok: false })],
+          confirm: [runAskValue('confirm', confirm, { ok: true }), runAskValue('confirm', confirm, { ok: false })],
+          choose: [runAskValue('choose', choose, { ok: true, picked: [1] }), runAskValue('choose', choose, { ok: false })],
+        };
+      ''');
+      expect(r, {
+        'from': '“Push” on page “Tools” (emu.yaml) asks while it runs:',
+        'title': 200,
+        'rest': ['a\nb', true, '<b>go</b>'], // as text: openDialog sets textContent
+        'fields': [
+          {'name': 'm', 'label': 'm', 'default': 'hi'},
+        ],
+        'prompt': [
+          {'m': 'yo'},
+          null,
+        ],
+        'confirm': [true, false],
+        'choose': ['prod', null],
       });
     });
 

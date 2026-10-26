@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+### Added
+- 커스텀 화면 인터페이스 3단계 — 실행 중에 묻기 (#49). action 설정 `interactive: true`(툴바·행·form·html 블록
+  액션): 명령이 stdout 에 한 줄 `::emu-ask {"id", "kind": "confirm|prompt|choose", title, message?, detail?,
+  danger?, button?, fields?, options?, multiple?}` 를 찍으면 emu 가 그 줄을 출력(실시간·최종·로그)에서 빼고
+  묻고, 답을 stdin 에 한 줄 `{"id", "value"}` 로 쓴다. 대시보드에서 시작한 실행은 그 탭에만(대시보드 창 규칙:
+  텍스트로만, 출처 = 페이지·액션 이름, 한 번에 한 창, danger 면 포커스 Cancel), `emu run` 은 터미널에서 묻는다.
+  답할 곳이 없거나(터미널 없음, `auto:` 실행, 탭 닫힘) `askTimeout`(기본 120초) 안에 답이 없으면 `null`.
+  잘못된 JSON·모르는 kind·64 KB 넘는 줄은 `null` 로 답하고 출력에 경고. 답은 질문에 맞춰 거르고(bool, 그
+  질문의 칸·항목), 질문 글자는 길이를 자른다. 명령에 `EMU_ASK=1`(물을 수 있을 때, 아니면 `0`). 질문이 답을
+  기다리는 동안 실행 `timeout:` 은 멈추고, 기다린 시간은 실행 결과의 `waitedMs`. `interactive` 가 없으면 그런
+  줄은 그냥 출력이고 stdin 은 지금처럼 닫힌다. API: 실행 요청의 `asker`, `/api/stream?asker=<id>[&only=ask]`,
+  `POST /api/pages/<page>/asks/<askId>` `{value}`. 예제 `docs/examples/ask`.
+
+### Fixed
+- 합친 확인 창(`emu.run(id, {confirm})`)에서 emu.yaml 쪽 문구를 통째로 아래쪽 action 섹션에 둔다 — 화면 쪽
+  `detail` 이 emu.yaml 쪽 내용을 덮어쓸 수 없다.
+- `emu.refresh` 의 1초 반복 막기 기록을 페이지 전환·다시 그리기 때 정리한다(사라진 블록·다른 페이지 키가 남던 것).
+
 ## [0.15.0] - 2026-10-26
 
 ### Added
