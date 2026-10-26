@@ -160,6 +160,20 @@ void main() {
     expect(broadcasts.where((b) => b['event'] == 'output').every((b) => b['page'] == 'tools' && b['item'] == 'steps'), isTrue);
   });
 
+  test('output waiting for its batch is held to the tail, however fast it comes', () {
+    final sent = <String>[];
+    final live = LiveOutput(sent.add, limit: 10);
+    for (var i = 0; i < 1000; i++) {
+      live.add('$i,');
+      expect(live.pending, lessThanOrEqualTo(20));
+    }
+    live.flush();
+    expect(sent, ['997,998,999,'.substring(2)]);
+    expect(live.pending, 0);
+    live.flush();
+    expect(sent, hasLength(1)); // nothing new, nothing sent
+  });
+
   test('a string command runs with sh -c and sees the EMU_ variables', () async {
     final (_, j) = await run('env');
     expect(j['output'], contains('dev=emulator-5554 root=${root.path.split('/').last}'));

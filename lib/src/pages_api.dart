@@ -423,7 +423,7 @@ class PagesApi {
     try {
       broadcast({'type': 'ext', 'event': 'started', 'page': page.id, 'item': itemId, if (auto != null) 'auto': true});
       log('[ext] $key ▸ $display${auto == null ? '' : '   (auto: $auto changed)'}', LogLevel.system);
-      final live = _LiveOutput(
+      final live = LiveOutput(
           (chunk) => broadcast({'type': 'ext', 'event': 'output', 'page': page.id, 'item': itemId, 'chunk': chunk}));
       run = url != null
           ? await _openUrl(page.id, itemId, url)
@@ -916,37 +916,48 @@ class _AutoState {
 }
 
 /// A running command's output for dashboards, sent in batches: what came
-/// within [_outputEvery] goes as one chunk (its tail, if that's a lot).
-class _LiveOutput {
-  _LiveOutput(this._send);
+/// within [_outputEvery] goes as one chunk (its tail, if that's a lot). What
+/// waits for the next batch is held to the tail too, so a command that prints
+/// fast can't grow it unbounded.
+class LiveOutput {
+  LiveOutput(this._send, {int limit = _outputLimit}) : _limit = limit, _tail = _Tail(limit);
 
   final void Function(String chunk) _send;
-  final _buf = StringBuffer();
+  final int _limit;
+  _Tail _tail;
   Timer? _timer;
 
+  /// Characters held for the next batch: at most twice the limit.
+  int get pending => _tail.length;
+
   void add(String chunk) {
-    _buf.write(chunk);
+    _tail.add(chunk);
     _timer ??= Timer(_outputEvery, flush);
   }
 
   void flush() {
     _timer?.cancel();
     _timer = null;
-    if (_buf.isEmpty) return;
-    final text = _buf.toString();
-    _buf.clear();
-    _send(text.length > _outputLimit ? text.substring(text.length - _outputLimit) : text);
+    final text = _tail.text;
+    if (text.isEmpty) return;
+    _tail = _Tail(_limit);
+    _send(text);
   }
 }
 
-/// The last [_outputLimit] characters of a stream of chunks.
+/// The last [_limit] characters of a stream of chunks.
 class _Tail {
+  _Tail([this._limit = _outputLimit]);
+
+  final int _limit;
   final _buf = StringBuffer();
+
+  int get length => _buf.length;
 
   String add(String chunk) {
     _buf.write(chunk);
-    if (_buf.length > _outputLimit * 2) {
-      final keep = _buf.toString().substring(_buf.length - _outputLimit);
+    if (_buf.length > _limit * 2) {
+      final keep = _buf.toString().substring(_buf.length - _limit);
       _buf
         ..clear()
         ..write(keep);
@@ -954,7 +965,7 @@ class _Tail {
     return chunk;
   }
 
-  String get text => _buf.length > _outputLimit ? _buf.toString().substring(_buf.length - _outputLimit) : '$_buf';
+  String get text => _buf.length > _limit ? _buf.toString().substring(_buf.length - _limit) : '$_buf';
 }
 
 String _clip(String s) {
