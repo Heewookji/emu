@@ -187,6 +187,20 @@ void main() {
     expect(sent, ['first part', '\n… 14 characters skipped while streaming …\nline 3\nline 4\n']);
   });
 
+  test('a batch cut right after a line keeps the line it starts with', () {
+    final sent = <String>[];
+    final live = LiveOutput(sent.add, limit: 14);
+    live.add('line 1\nline 2\nline 3\n'); // 21: its last 14 begin at "line 2"
+    live.flush();
+    final held = LiveOutput(sent.add, limit: 7);
+    held.add('aaaaaa\nbbbbbb\ncccccc\n'); // 21, over twice the limit: held to "cccccc\n" already
+    held.flush();
+    expect(sent, [
+      '… 7 characters skipped while streaming …\nline 2\nline 3\n',
+      '… 14 characters skipped while streaming …\ncccccc\n',
+    ]);
+  });
+
   test('a command that prints faster than dashboards need sends them the tail of each batch', () async {
     final (_, j) = await run('big');
     expect(j['ok'], isTrue);

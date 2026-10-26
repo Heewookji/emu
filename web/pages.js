@@ -1630,7 +1630,9 @@ function renderOutput(page, el, { head = false } = {}) {
   if (liveKey) startOutputTicker();
   if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; el.dataset.shown = ''; return; }
   // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
-  const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
+  // A live run is told apart by when it started: one that ran again while
+  // this was folded is new, not more of the one drawn before.
+  const id = liveKey ? `live:${liveKey}@${pageState.liveSince[liveKey]}` : `run:${page.id}.${run.item}@${run.at}`;
   const prev = el.dataset.shown || '';
   if (liveKey) {
     cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
@@ -1658,7 +1660,7 @@ function renderOutput(page, el, { head = false } = {}) {
   pre.innerHTML = body ? linkify(body) : '<span class="muted">(no output)</span>';
   el._live = null;
   // The run that was just streaming here keeps its place (or its end); another starts at the top.
-  if (prev !== `live:${page.id}.${run.item}`) pre.scrollTop = 0;
+  if (!prev.startsWith(`live:${page.id}.${run.item}@`)) pre.scrollTop = 0;
   else if (atEnd) pre.scrollTop = pre.scrollHeight;
 }
 

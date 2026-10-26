@@ -970,7 +970,7 @@ class LiveOutput {
     if (text.isEmpty) return;
     var skipped = _added - text.length;
     // Cut within a line: the tail starts at its next one.
-    final cut = skipped > 0 ? text.indexOf('\n') : -1;
+    final cut = skipped > 0 && !_tail.atLineStart ? text.indexOf('\n') : -1;
     if (cut >= 0 && cut < text.length - 1) {
       skipped += cut + 1;
       text = text.substring(cut + 1);
@@ -989,21 +989,30 @@ class _Tail {
 
   final int _limit;
   final _buf = StringBuffer();
+  String _before = ''; // the last character dropped from the head
 
   int get length => _buf.length;
 
   String add(String chunk) {
     _buf.write(chunk);
     if (_buf.length > _limit * 2) {
-      final keep = _buf.toString().substring(_buf.length - _limit);
+      final all = _buf.toString();
+      _before = all[all.length - _limit - 1];
       _buf
         ..clear()
-        ..write(keep);
+        ..write(all.substring(all.length - _limit));
     }
     return chunk;
   }
 
   String get text => _buf.length > _limit ? _buf.toString().substring(_buf.length - _limit) : '$_buf';
+
+  /// [text] starts a line: nothing was cut before it, or what was ended one.
+  bool get atLineStart {
+    final all = '$_buf';
+    final before = all.length > _limit ? all[all.length - _limit - 1] : _before;
+    return before.isEmpty || before == '\n';
+  }
 }
 
 String _clip(String s) {
