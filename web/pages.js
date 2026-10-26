@@ -44,7 +44,7 @@ const pageState = {
   input: {},             // 'page.form' → {field: value}
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
-  closed: {},            // page id → the areas hidden with their ×
+  folded: {},            // page id → the areas folded to a strip
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -58,13 +58,13 @@ try {
   if (prefs.tree && typeof prefs.tree === 'object') pageState.tree = prefs.tree;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
-  if (prefs.closed && typeof prefs.closed === 'object') pageState.closed = prefs.closed;
+  if (prefs.folded && typeof prefs.folded === 'object') pageState.folded = prefs.folded;
 } catch (_) {}
 function savePagePrefs() {
   try {
     localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
       selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
-      input: pageState.input, sizes: pageState.sizes, closed: pageState.closed,
+      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded,
     }));
   } catch (_) {}
 }
@@ -293,7 +293,7 @@ function renderPageBar(page) {
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
       + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`
       + (item.auto ? autoSwitchHtml(page, item) : '');
-  }).join('') + '<span class="grow"></span>' + reopenHtml(page) + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -307,7 +307,6 @@ function renderPageBar(page) {
     };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
-  pageEls.bar.querySelectorAll('[data-open-area]').forEach(b => { b.onclick = () => openArea(page, b.dataset.openArea); });
   pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
 }
 
@@ -477,11 +476,11 @@ function renderPageBody(page) {
   const body = pageEls.body;
   body.innerHTML = page.blocks.length
     ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}">`
-      + (areas[a].length ? `<button class="area-close" data-close-area="${a}" title="Hide this area — the bar above opens it again">×</button>` : '')
-      + '</div>').join('')
+      + (areas[a].length ? areaFoldHtml(a, areas[a]) : '') + '</div>').join('')
     : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
   applyAreas(page);
-  body.querySelectorAll('[data-close-area]').forEach(b => { b.onclick = () => closeArea(page, b.dataset.closeArea); });
+  body.querySelectorAll('[data-fold-area]').forEach(b => { b.onclick = () => foldArea(page, b.dataset.foldArea); });
+  body.querySelectorAll('[data-unfold-area]').forEach(b => { b.onclick = () => unfoldArea(page, b.dataset.unfoldArea); });
   for (const [area, blocks] of Object.entries(areas)) {
     const host = body.querySelector(`[data-area="${area}"]`);
     for (const b of blocks) {
@@ -498,51 +497,66 @@ function renderPageBody(page) {
   renderOutputs(page);
 }
 
-// ---- hidden areas --------------------------------------------------------------
-// Each area with blocks has a × that hides it; the others take its room and
-// the page bar offers it back. Kept per page. The last open area can't be
-// hidden. Its blocks keep the pick and checks: those lists are still fetched,
-// the rest when the area opens.
+// ---- folded areas --------------------------------------------------------------
+// Each area with blocks folds (the chevron in its first block's head) to a
+// strip of its blocks' titles, and the others take its room; a click on the
+// strip unfolds it in place. Kept per page. The last unfolded area doesn't
+// fold. A folded area's blocks keep the pick and checks: those lists are
+// still fetched, the rest when it unfolds.
 
-function areaClosed(page, area) { return (pageState.closed[page.id] || []).includes(area); }
+// [fold, unfold] chevrons: toward where the area goes, and back.
+const FOLD_ICONS = { left: ['‹', '›'], main: ['⌃', '⌄'], bottom: ['⌄', '⌃'] };
+
+function areaFolded(page, area) { return (pageState.folded[page.id] || []).includes(area); }
 
 function areasWithBlocks(page) { return ['left', 'main', 'bottom'].filter(a => page.blocks.some(b => b.area === a)); }
 
+function areaFoldHtml(area, blocks) {
+  const titles = blocks.map(b => b.title || b.kind).join(' · ');
+  return `<button class="area-fold" data-fold-area="${area}" title="Fold this area">${FOLD_ICONS[area][0]}</button>`
+    + `<button class="fold-bar area-fold-bar" data-unfold-area="${area}" title="Unfold">`
+    + `<span class="fold-icon">${FOLD_ICONS[area][1]}</span><span class="fold-titles">${escapeHtml(titles)}</span></button>`;
+}
+
+// The grid follows what's folded: the left area folds to an upright strip,
+// main and bottom to a bar — or, both folded, the right column to a strip.
 function applyAreas(page) {
   const body = pageEls.body;
   const used = areasWithBlocks(page);
-  const open = used.filter(a => !areaClosed(page, a));
+  const folded = (a) => used.includes(a) && areaFolded(page, a);
+  const right = ['main', 'bottom'].filter(a => used.includes(a));
+  const rightFolded = right.length > 0 && right.every(folded);
   for (const a of ['left', 'main', 'bottom']) {
-    body.classList.toggle(`no-${a}`, !open.includes(a));
+    body.classList.toggle(`no-${a}`, !used.includes(a));
     const el = body.querySelector(`[data-area="${a}"]`);
-    if (el) el.hidden = !open.includes(a);
+    if (!el) continue;
+    el.classList.toggle('folded', folded(a));
+    el.classList.toggle('upright', folded(a) && (a === 'left' || rightFolded));
+    const icon = el.querySelector('.area-fold-bar .fold-icon');
+    if (icon) icon.textContent = a !== 'left' && rightFolded ? '‹' : FOLD_ICONS[a][1];
   }
-  body.querySelectorAll('[data-close-area]').forEach(b => { b.hidden = open.length < 2; });
+  body.classList.toggle('fold-left', folded('left'));
+  body.classList.toggle('fold-right', rightFolded);
+  body.classList.toggle('fold-main', folded('main') && !rightFolded);
+  body.classList.toggle('fold-bottom', folded('bottom') && !rightFolded);
+  const unfolded = used.filter(a => !folded(a));
+  body.querySelectorAll('[data-fold-area]').forEach(b => { b.hidden = unfolded.length < 2; });
 }
 
-function closeArea(page, area) {
-  pageState.closed[page.id] = [...new Set([...(pageState.closed[page.id] || []), area])];
+function foldArea(page, area) {
+  pageState.folded[page.id] = [...new Set([...(pageState.folded[page.id] || []), area])];
   savePagePrefs();
   applyAreas(page);
-  renderPageBar(page);
 }
 
-// [area]: one area, or '*' for all of them.
-function openArea(page, area) {
-  const closed = (pageState.closed[page.id] || []).filter(a => area !== '*' && a !== area);
-  if (closed.length) pageState.closed[page.id] = closed;
-  else delete pageState.closed[page.id];
+function unfoldArea(page, area) {
+  const folded = (pageState.folded[page.id] || []).filter(a => a !== area);
+  if (folded.length) pageState.folded[page.id] = folded;
+  else delete pageState.folded[page.id];
   savePagePrefs();
   applyAreas(page);
-  renderPageBar(page);
-  loadBlocks(page, page.blocks.filter(b => !areaClosed(page, b.area) && pageState.stale.has(blockKey(page, b))));
-}
-
-// The page bar's way back to hidden areas.
-function reopenHtml(page) {
-  const closed = areasWithBlocks(page).filter(a => areaClosed(page, a));
-  return closed.map(a => `<button class="area-open" data-open-area="${a}" title="Show the ${a} area again">+ ${a}</button>`).join('')
-    + (closed.length > 1 ? '<button class="area-open" data-open-area="*" title="Show every area">open all</button>' : '');
+  // What it skipped while folded.
+  loadBlocks(page, page.blocks.filter(b => b.area === area && pageState.stale.has(blockKey(page, b))));
 }
 
 // ---- panel sizes ---------------------------------------------------------------
@@ -608,8 +622,8 @@ function loadBlocks(page, blocks) {
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
     if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
-    // A hidden area is fetched when it opens — but the lists that hold the pick and the checks always are.
-    if (areaClosed(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
+    // A folded area is fetched when it unfolds — but the lists that hold the pick and the checks always are.
+    if (areaFolded(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
