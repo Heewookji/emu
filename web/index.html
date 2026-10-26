@@ -128,6 +128,12 @@
       <div class="confirm-msg" id="confirm-msg" hidden></div>
       <pre class="modal-detail" id="confirm-detail" hidden></pre>
       <div class="form-grid modal-fields" id="confirm-fields" hidden></div>
+      <div class="modal-choices" id="confirm-choices" hidden></div>
+      <div class="confirm-action" id="confirm-action" hidden>
+        <div class="muted">and runs — in emu.yaml:</div>
+        <div class="confirm-action-title" id="confirm-action-title"></div>
+        <div class="confirm-msg" id="confirm-action-msg" hidden></div>
+      </div>
       <div class="confirm-preview" id="confirm-preview" hidden></div>
       <div id="confirm-command" hidden>
         <details id="confirm-cmd-box">
@@ -138,7 +144,8 @@
       </div>
     </div>
     <div class="modal-foot">
-      <button id="confirm-block" hidden title="Answer this view's confirm and prompt requests with no until the dashboard reloads">Block requests from this view</button>
+      <button id="confirm-block" hidden title="Answer this view's confirm, prompt and choose requests with no until the dashboard reloads">Block requests from this view</button>
+      <span class="muted" id="confirm-wait" hidden>OK — a moment, in case the view runs a command next…</span>
       <span class="grow"></span>
       <button id="confirm-cancel">Cancel</button>
       <button id="confirm-run" class="run">Run</button>

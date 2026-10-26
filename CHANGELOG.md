@@ -22,6 +22,14 @@
 - `html` 블록 설정의 `inputs: [...]` 와 블록 자신의 액션(`actions:` 의 `- action: {…}`; 문자열은 지금처럼 툴바 id).
   `POST /api/pages/<page>/frames/<block>/<action>`, `emu run <page>.<block>.<action> --input k=v`. input 은
   `inputs:` 에 적은 이름만 받는다. 실행 응답에 stdout 이 JSON 이면 `data` 를 더한다. 예제 `docs/examples/html-block`.
+- 커스텀 화면 인터페이스 2단계 (#49). `emu.choose({title, options, multiple})` — 대시보드가 그리는 선택 창(confirm·
+  prompt 와 같은 규칙: 출처, 텍스트로만, 한 번에 한 창, 연속 취소 시 막기), 값 또는 `null`. `emu.select(key)` —
+  페이지 선택 행을 바꿈(없는 행이면 `{ok: false}`). `emu.refresh(blockId?)` — 자기 블록이나 같은 페이지 블록의
+  데이터를 다시 받음(받는 중·1초 안이면 거절).
+- 확인 창 합치기 (#49). `emu.run(id, {input, confirm: {title, message, detail}})` 이면 화면의 설명과 `confirm:` 의
+  문구·preview·실제 명령을 창 하나에 보여 주고 Run 한 번으로 실행. `emu.confirm` 직후(1초 안) 같은 화면이
+  `confirm:` 액션을 실행하면 OK 를 누른 창이 그 자리에서 명령 확인으로 이어진다. 합칠 수 없으면 두 번 묻는다.
+  frame 이 `confirmed` 를 보내는 길은 여전히 없다. 예제에 선택 list·Roll back·reload 를 더했다.
 - 대시보드 페이지 list 의 여러 행 체크(#47) — `check: true` 로 체크박스 열·전체 선택·개수. 버튼 명령에서
   `{{checked.<col>...}}`(체크한 행마다 인자 하나), `{{checked.<col>}}`(쉼표로 이은 인자 하나),
   `{{checked.count}}`, list 가 여럿이면 `{{<list>.checked.…}}`. `confirm:` 의 title·message·preview 에도

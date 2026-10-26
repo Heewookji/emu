@@ -1016,9 +1016,12 @@ pages:
   | Call | Does | Resolves to |
   |------|------|-------------|
   | `emu.onData(fn)` | `fn({ok, data, text, error, needs, selected})` with the block's `run:` output — now if it came already, and on every refresh | an unsubscribe function |
-  | `emu.run(id, {input})` | runs an id from the block's `actions:` — its own action, or a toolbar action it lists | `{ok, exitCode, error, output, data}` — `data` when stdout is JSON; `cancelled` / `busy` / `needs` when it didn't run |
+  | `emu.run(id, {input, confirm})` | runs an id from the block's `actions:` — its own action, or a toolbar action it lists. `confirm: {title, message, detail, danger}` (or a title): the view's words for the run, asked in one dialog (below) | `{ok, exitCode, error, output, data}` — `data` when stdout is JSON; `cancelled` / `busy` / `needs` when it didn't run |
   | `emu.confirm({title, message, detail, danger, button})` | asks yes/no | `true` / `false` |
   | `emu.prompt({title, message, fields: [{name, label, default}]})` | asks for text | `{name: value, …}` or `null` |
+  | `emu.choose({title, message, options: [{value, label}], multiple})` | asks to pick one (or, `multiple`, any) — an option may be a bare value | the value (`multiple`: an array) or `null` |
+  | `emu.select(key)` | picks the row with that key in the page's selection list, as a click would — blocks that read `{{selected.*}}` follow | `{ok}`, or `{ok: false, error}` when the page has no such row |
+  | `emu.refresh(blockId)` | fetches the block's data again (its `onData` gets it); with an id, another block of the page | `{ok}`, or `{ok: false, error}` (no such block, already loading) |
   | `emu.toast(text, level)` | a toast, prefixed with the block's title | — |
 
   ```yaml
@@ -1036,16 +1039,20 @@ pages:
         - action:
             id: deploy
             run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
-            confirm: true
+            confirm: { title: "Push to {{input.env}}", danger: true, button: push }
   ```
 
   ```js
   emu.onData(({ data }) => render(data));
-  const plan = await emu.run('plan', { input: { env: 'stage' } });
+  const env = await emu.choose({ title: 'Deploy to', options: ['stage', 'prod'] });
+  if (!env) return;
+  const plan = await emu.run('plan', { input: { env } });
   if (!plan.ok) return emu.toast(`preview failed: ${plan.error}`, 'error');
-  if (await emu.confirm({ title: `Push ${plan.data.length} templates?`, detail: plan.data.map(t => t.path).join('\n') })) {
-    await emu.run('deploy', { input: { env: 'stage', message: 'from the view' } });
-  }
+  // One dialog: these words, then emu.yaml's confirm: and the exact command.
+  await emu.run('deploy', {
+    input: { env, message: 'from the view' },
+    confirm: { title: `Push ${plan.data.length} templates?`, detail: plan.data.map(t => t.path).join('\n') },
+  });
   ```
 
   A full example is in [`docs/examples/html-block`](docs/examples/html-block). What keeps a
@@ -1054,11 +1061,19 @@ pages:
     (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`), and every text in them is shown as text,
     never as HTML. One dialog at a time: a request while one is open answers `busy`
     (`false`/`null`). Only a frame of the page on screen gets answers.
-  - `emu.confirm` is the view's own question; it doesn't stand in for `confirm: true`. Such an
-    action asks again in the dashboard's own dialog with the exact command, also when a frame
-    runs it — a frame can't send `confirmed`.
+  - `emu.confirm` is the view's own question; it doesn't stand in for `confirm:`. Such an
+    action asks in the dashboard's own dialog with the exact command, also when a frame runs it —
+    a frame can't send `confirmed`. Not twice, though:
+    - `emu.run(id, {confirm})` puts the view's words on top of that dialog (under its "from"
+      line), with emu.yaml's `confirm:` words, preview and command below — one dialog, one Run.
+      For an action without `confirm:`, the view's words are asked alone before it runs.
+    - `emu.confirm` and then, within a second, a `confirm:` action of the same view: on OK the
+      dialog stays up and goes on to that run's command in place — one window, Run pressed for
+      the command. Anything else in between, or a later run, asks in a dialog of its own.
   - A view whose dialogs keep getting cancelled is offered **Block requests from this view**;
-    then, until the dashboard reloads, its `confirm`/`prompt` answer no at once.
+    then, until the dashboard reloads, its `confirm`/`prompt`/`choose` answer no at once.
+  - `emu.select` only picks rows the page's list has; `emu.refresh` only fetches blocks of the
+    view's own page, not while one is loading or twice in a second.
   - `input` goes only into names listed in `inputs:` (anything else is dropped), each value inside
     one argument as with every placeholder.
   - Without the helper: data arrives as `{type: "emu:data", …}`, `{type: "emu:ready"}` asks for it

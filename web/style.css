@@ -321,6 +321,15 @@ body.resizing iframe { pointer-events: none; }
 .modal-body pre.modal-detail { max-height: 40vh; overflow: auto; word-break: break-word; margin-bottom: 10px; }
 .modal-fields { padding: 0 0 10px; }
 .modal-detail[hidden], .modal-fields[hidden], .modal-from[hidden], #confirm-command[hidden] { display: none; }
+/* emu.choose: a radio or checkbox per option. */
+.modal-choices { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow: auto; margin-bottom: 10px; }
+.modal-choices label { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border-radius: 5px; cursor: pointer; word-break: break-word; }
+.modal-choices label:hover { background: var(--bg); }
+/* A view's run: emu.yaml's words for it, under the view's. */
+.confirm-action { border-top: 1px solid var(--border); padding-top: 10px; margin-bottom: 10px; }
+.confirm-action-title { font-weight: 700; }
+.modal.danger .confirm-action-title { color: #ffa198; }
+.modal-choices[hidden], .confirm-action[hidden], #confirm-wait[hidden] { display: none; }
 
 /* Page blocks: list (table of a command's JSON rows) and diff (its patch). */
 .ext-block.loading > :not(.blk-head) { opacity: .55; }

@@ -928,9 +928,12 @@ pages:
   | 함수 | 하는 일 | 돌려주는 값 |
   |------|---------|-------------|
   | `emu.onData(fn)` | 블록 `run:` 의 출력으로 `fn({ok, data, text, error, needs, selected})` — 이미 왔으면 바로, 그리고 새로 고칠 때마다 | 구독 해제 함수 |
-  | `emu.run(id, {input})` | 블록 `actions:` 에 있는 id 를 실행 — 블록 자신의 액션, 또는 거기 적은 툴바 액션 | `{ok, exitCode, error, output, data}` — stdout 이 JSON 이면 `data`. 실행되지 않았으면 `cancelled`·`busy`·`needs` |
+  | `emu.run(id, {input, confirm})` | 블록 `actions:` 에 있는 id 를 실행 — 블록 자신의 액션, 또는 거기 적은 툴바 액션. `confirm: {title, message, detail, danger}`(또는 제목 문자열)는 이 실행에 대한 화면의 설명 — 창 하나로 묻는다(아래) | `{ok, exitCode, error, output, data}` — stdout 이 JSON 이면 `data`. 실행되지 않았으면 `cancelled`·`busy`·`needs` |
   | `emu.confirm({title, message, detail, danger, button})` | 예/아니오를 묻는다 | `true` / `false` |
   | `emu.prompt({title, message, fields: [{name, label, default}]})` | 글자를 입력받는다 | `{name: value, …}` 또는 `null` |
+  | `emu.choose({title, message, options: [{value, label}], multiple})` | 하나(`multiple` 이면 여러 개)를 고르게 한다 — 항목은 값만 줘도 된다 | 고른 값(`multiple` 이면 배열) 또는 `null` |
+  | `emu.select(key)` | 페이지 선택 list 에서 그 key 의 행을 클릭한 것처럼 고른다 — `{{selected.*}}` 를 읽는 블록이 따라온다 | `{ok}`, 그런 행이 없으면 `{ok: false, error}` |
+  | `emu.refresh(blockId)` | 블록 데이터를 다시 받는다(`onData` 로 온다). id 를 주면 같은 페이지의 다른 블록 | `{ok}`, 또는 `{ok: false, error}`(없는 블록, 이미 받는 중) |
   | `emu.toast(text, level)` | 블록 제목을 앞에 붙인 토스트 | — |
 
   ```yaml
@@ -948,16 +951,20 @@ pages:
         - action:
             id: deploy
             run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
-            confirm: true
+            confirm: { title: "{{input.env}} 에 push", danger: true, button: push }
   ```
 
   ```js
   emu.onData(({ data }) => render(data));
-  const plan = await emu.run('plan', { input: { env: 'stage' } });
+  const env = await emu.choose({ title: '배포할 곳', options: ['stage', 'prod'] });
+  if (!env) return;
+  const plan = await emu.run('plan', { input: { env } });
   if (!plan.ok) return emu.toast(`미리보기 실패: ${plan.error}`, 'error');
-  if (await emu.confirm({ title: `템플릿 ${plan.data.length}개를 push 할까요?`, detail: plan.data.map(t => t.path).join('\n') })) {
-    await emu.run('deploy', { input: { env: 'stage', message: '배포 화면에서' } });
-  }
+  // 창 하나: 이 설명 다음에 emu.yaml 의 confirm: 과 실제 명령.
+  await emu.run('deploy', {
+    input: { env, message: '배포 화면에서' },
+    confirm: { title: `템플릿 ${plan.data.length}개를 push 할까요?`, detail: plan.data.map(t => t.path).join('\n') },
+  });
   ```
 
   전체 예제는 [`docs/examples/html-block`](docs/examples/html-block). 커스텀 화면이 넘지 못하는 선:
@@ -965,10 +972,19 @@ pages:
     (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`). 창의 글자는 HTML 로 해석하지 않고 텍스트로만
     보인다. 한 번에 한 창 — 창이 열려 있을 때 온 요청은 `busy`(`false`/`null`)로 답한다. 지금 보이는
     페이지의 frame 만 답을 받는다.
-  - `emu.confirm` 은 화면 자신의 질문일 뿐, `confirm: true` 를 대신하지 않는다. 그런 액션은 frame 이
-    실행해도 대시보드 자체 확인 창(실제 명령 줄 포함)을 다시 거친다 — frame 은 `confirmed` 를 보낼 수 없다.
+  - `emu.confirm` 은 화면 자신의 질문일 뿐, `confirm:` 을 대신하지 않는다. 그런 액션은 frame 이
+    실행해도 대시보드 자체 확인 창(실제 명령 줄 포함)을 거친다 — frame 은 `confirmed` 를 보낼 수 없다.
+    다만 두 번 묻지는 않는다:
+    - `emu.run(id, {confirm})` 은 화면의 설명을 그 창 위쪽(출처 줄 아래)에, emu.yaml 의 `confirm:` 문구·
+      preview·명령을 아래쪽에 보여 준다 — 창 하나, Run 한 번. `confirm:` 이 없는 액션이면 화면의 설명만
+      먼저 묻고 실행한다.
+    - `emu.confirm` 직후(1초 안) 같은 화면이 `confirm:` 액션을 실행하면, OK 를 누른 창이 닫히지 않고 그
+      자리에서 실행할 명령으로 이어진다 — 창 하나, 명령에 대해 Run 을 한 번 더 누른다. 그 사이 다른 요청이
+      오거나 늦게 실행하면 따로 창을 띄워 묻는다(안전한 쪽).
   - 창을 짧은 시간에 연달아 취소하면 **Block requests from this view** 를 제안하고, 막으면 대시보드를 다시
-    불러오기 전까지 그 화면의 `confirm`/`prompt` 는 바로 아니오로 답한다.
+    불러오기 전까지 그 화면의 `confirm`/`prompt`/`choose` 는 바로 아니오로 답한다.
+  - `emu.select` 는 페이지 list 에 있는 행만 고르고, `emu.refresh` 는 그 화면이 있는 페이지의 블록만, 받는
+    중이거나 1초 안에 다시 부르면 받지 않는다.
   - `input` 은 `inputs:` 에 적은 이름만 받고(나머지는 버림), 다른 치환처럼 값은 인자 하나 안에만 들어간다.
   - 도우미 없이도 지금처럼 된다: 데이터는 `{type: "emu:data", …}` 로 오고, `{type: "emu:ready"}` 로 다시
     받으며, `{type: "emu:action", id}` 는 답 없이 액션을 실행한다.

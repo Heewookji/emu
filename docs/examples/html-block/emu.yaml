@@ -1,12 +1,18 @@
 # An html block that talks to the dashboard through window.emu (#49):
-# preview → confirm → run, all inside a custom view. Copy this folder's
-# emu.yaml `pages:` and tool/ into a Flutter project to try it with `emu up`.
+# choose → preview → confirm → run, all inside a custom view; picking a row
+# for the rest of the page (emu.select) and fetching again (emu.refresh).
+# Copy this folder's emu.yaml `pages:` and tool/ into a Flutter project to try
+# it with `emu up`.
 pages:
   - id: deploy
     title: Deploy
     toolbar:
       - action: { id: sync, label: sync, run: [./tool/tpl.sh, sync] }
     blocks:
+      - list:                                 # the page's first list holds its selection
+          id: templates
+          title: Templates
+          run: [./tool/tpl.sh, list]
       - html:
           id: view
           title: Deploy
@@ -21,5 +27,12 @@ pages:
             - action:
                 id: deploy
                 run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
-                confirm: true                 # the dashboard asks again, showing this command
+                confirm:                      # the dashboard shows this and the command, also for the view
+                  title: "Push to the {{input.env}} branch of the deploy repository"
+                  danger: true
+                  button: push
+            - action:
+                id: rollback
+                run: [./tool/tpl.sh, rollback, "{{input.env}}"]
+                confirm: true
       - output: {}
