@@ -231,6 +231,7 @@ class PageAction extends ToolbarItem {
     this.confirm,
     this.needsChecked,
     this.bulk = false,
+    this.auto,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -248,6 +249,10 @@ class PageAction extends ToolbarItem {
   /// A row button that also runs once per checked row, from the list's head
   /// (`bulk: true`). The dashboard does the rounds; each is a plain row run.
   final bool bulk;
+
+  /// `auto:` — the server also runs it when a file it watches changes, while
+  /// it is switched on. Toolbar actions only, with nothing to fill or ask.
+  final AutoRun? auto;
 
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
@@ -268,7 +273,25 @@ class PageAction extends ToolbarItem {
         'preview': ?confirm?.preview?.display,
         'needsChecked': ?needsChecked,
         if (bulk) 'bulk': true,
+        'auto': ?auto?.toJson(),
       };
+}
+
+const defaultAutoDebounce = Duration(milliseconds: 400);
+
+/// When an action runs on its own (`auto:`): a change to a project file that
+/// matches [watch], once the changes have rested for [debounce]. [on] is
+/// where the dashboard's switch starts; the server keeps it per project.
+class AutoRun {
+  const AutoRun({required this.watch, this.debounce = defaultAutoDebounce, this.on = false});
+
+  final List<String> watch;
+  final Duration debounce;
+  final bool on;
+
+  bool matches(String relPath) => watch.any((g) => globToRegExp(g).hasMatch(relPath));
+
+  Map<String, dynamic> toJson() => {'watch': watch, 'debounce': debounce.inMilliseconds, 'on': on};
 }
 
 /// A switch: [state] prints `{"on": bool, "detail"?: string}`; flipping it
@@ -333,12 +356,44 @@ class OutputBlock extends PageBlock {
 /// How a list column shows its value.
 const columnFormats = {'text', 'chip', 'count'};
 
+/// A text column's widest, as `<n>em`, `<n>ch` or `<n>px`.
+final _columnWidth = RegExp(r'^\d+(?:\.\d+)?(?:em|ch|px)$');
+
 class ListColumn {
-  const ListColumn(this.key, [this.format = 'text']);
+  const ListColumn(this.key, [this.format = 'text', this.width, this.clipStart = false]);
   final String key;
   final String format;
 
-  Map<String, dynamic> toJson() => {'key': key, 'format': format};
+  /// How wide a text column grows before a longer value is cut with an
+  /// ellipsis (`40em`); null: the dashboard's default.
+  final String? width;
+
+  /// Cut a long text value at its start, so the end of a path stays in view.
+  final bool clipStart;
+
+  Map<String, dynamic> toJson() => {'key': key, 'format': format, 'width': ?width, if (clipStart) 'clip': 'start'};
+}
+
+/// A `columns:` entry: `name`, `name:text|chip|count`, and for text a width
+/// (`40em`) and `start`, in any order (`path:start` is `path:text:start`).
+ListColumn? parseColumn(String spec) {
+  final parts = spec.split(':');
+  if (parts.first.isEmpty) return null;
+  final named = parts.length > 1 && columnFormats.contains(parts[1]);
+  final format = named ? parts[1] : 'text';
+  String? width;
+  var start = false;
+  for (final mod in parts.skip(named ? 2 : 1)) {
+    if (format != 'text') return null;
+    if (mod == 'start' && !start) {
+      start = true;
+    } else if (_columnWidth.hasMatch(mod) && width == null) {
+      width = mod;
+    } else {
+      return null;
+    }
+  }
+  return ListColumn(parts.first, format, width, start);
 }
 
 /// How a list's rows get checked (`check:`): by the dashboard, which keeps
@@ -356,6 +411,27 @@ class ListCheck {
         'column': ?column,
         'toggle': ?toggle?.display,
       };
+}
+
+/// A list drawn as folders (`tree:`): the values of [columns], each split at
+/// `/`, make a row's path — its last part names the row, the parts before it
+/// are folders. Folders deeper than [open] levels start closed.
+class ListTree {
+  const ListTree(this.columns, {this.open = 0});
+  final List<String> columns;
+  final int open;
+
+  Map<String, dynamic> toJson() => {'columns': columns, 'open': open};
+}
+
+/// The order a list starts in (`sort: minVer:desc`); clicking a column head
+/// in the dashboard changes it.
+class ListSort {
+  const ListSort(this.column, {this.descending = false});
+  final String column;
+  final bool descending;
+
+  Map<String, dynamic> toJson() => {'key': column, 'dir': descending ? 'desc' : 'asc'};
 }
 
 /// Whether a `check.column` value means checked: true, a non-zero number,
@@ -381,6 +457,8 @@ class ListBlock extends PageBlock {
     this.columns = const [],
     this.rowActions = const [],
     this.check,
+    this.sort,
+    this.tree,
   });
 
   final PageCommand run;
@@ -394,6 +472,12 @@ class ListBlock extends PageBlock {
   final List<ListColumn> columns;
   final List<PageAction> rowActions;
   final ListCheck? check;
+
+  /// The starting order; null: as the command prints the rows.
+  final ListSort? sort;
+
+  /// Draw the rows as folders; null: a flat table.
+  final ListTree? tree;
 
   @override
   PageCommand get command => run;
@@ -421,12 +505,15 @@ class ListBlock extends PageBlock {
         'columns': [for (final c in columns) c.toJson()],
         'rowActions': [for (final a in rowActions) a.toJson()],
         'check': ?check?.toJson(),
+        'sort': ?sort?.toJson(),
+        'tree': ?tree?.toJson(),
         'watch': watch,
       };
 }
 
-/// The unified diff [run] prints, rendered like the Changes tab. With
-/// [segments], a switch picks what to compare against: `{{seg}}`.
+/// The unified diff [run] prints, rendered like the Changes tab; output that
+/// isn't a diff shows as text. With [segments], a switch picks what to compare
+/// against: `{{seg}}`.
 class DiffBlock extends PageBlock {
   const DiffBlock({
     required super.id,
@@ -435,14 +522,27 @@ class DiffBlock extends PageBlock {
     required this.run,
     required this.title,
     this.segments = const [],
+    this.optional = false,
+    this.hide,
   });
 
   final PageCommand run;
   final String title;
   final List<String> segments;
 
+  /// `segments: {optional: true}`: none is picked at first and a click turns
+  /// the picked one off — `{{seg}}` is then empty.
+  final bool optional;
+
+  /// `segments: {hide: "{{selected.env}}"}`: the segment equal to this value,
+  /// filled from the picked row, isn't offered (a branch compared with itself).
+  final String? hide;
+
   @override
   PageCommand get command => run;
+
+  /// The placeholders [hide] reads, as in [PageCommand.placeholders].
+  Set<String> get _hidePlaceholders => {for (final m in _placeholder.allMatches(hide ?? '')) PageCommand._key(m)};
 
   @override
   Map<String, dynamic> toJson() => {
@@ -451,8 +551,11 @@ class DiffBlock extends PageBlock {
         'area': area,
         'title': title,
         'command': run.display,
-        'uses': run.placeholders.toList(),
+        // The picked row also decides which segments show.
+        'uses': {...run.placeholders, ..._hidePlaceholders}.toList(),
         'segments': segments,
+        if (optional) 'segmentsOptional': true,
+        'segmentsHide': ?hide,
         'watch': watch,
       };
 }
@@ -776,7 +879,7 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   final id = claim(m['id'], at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems);
+  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems, toolbar: true);
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
@@ -788,12 +891,32 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   return PageToggle(id: id, label: label, state: state, on: on, off: off, then: then, timeout: timeout);
 }
 
-PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems, {bool bulk = false}) {
+PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems,
+    {bool bulk = false, bool toolbar = false}) {
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
   final (confirm, confirmOk) = _confirm(m['confirm'], '$where.confirm', allowed, problems);
   if (!confirmOk) return null;
+  AutoRun? auto;
+  if (m['auto'] != null) {
+    // It runs with no one there: nothing to fill in, nothing to ask.
+    final String? why = !toolbar
+        ? 'only toolbar actions run on their own'
+        : m['openUrl'] != null
+            ? 'works with run:, not openUrl'
+            : confirm != null
+                ? 'an action that asks first (confirm) can\'t run on its own'
+                : m['needs'] != null
+                    ? 'an action that runs on its own has no checked rows — drop needs'
+                    : null;
+    if (why != null) {
+      problems.add('$where.auto: $why');
+      return null;
+    }
+    auto = _parseAuto(m['auto'], '$where.auto', problems);
+    if (auto == null) return null;
+  }
   String? needsChecked;
   if (m['needs'] != null) {
     final needs = '${m['needs']}';
@@ -827,8 +950,46 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
   }
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
+  if (auto != null && run.placeholders.isNotEmpty) {
+    problems.add('$where.auto: an action that runs on its own has no pick, row or input to fill '
+        '${run.placeholders.map((k) => '{{$k}}').join(', ')} with');
+    return null;
+  }
   return PageAction(
-      id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm, needsChecked: needsChecked, bulk: bulk);
+      id: id,
+      label: label,
+      run: run,
+      then: then,
+      timeout: timeout,
+      confirm: confirm,
+      needsChecked: needsChecked,
+      bulk: bulk,
+      auto: auto);
+}
+
+/// `auto: {watch: [globs], debounce: <ms>, on: true|false}`.
+AutoRun? _parseAuto(Object? v, String at, List<String> problems) {
+  if (v is! Map || v.keys.any((k) => !const {'watch', 'debounce', 'on'}.contains(k))) {
+    problems.add('$at: expected {watch: ["templates/**"], debounce: <ms>, on: true|false}');
+    return null;
+  }
+  final watch = _watch(v['watch'], '$at.watch', problems);
+  if (watch == null) return null;
+  if (watch.isEmpty) {
+    problems.add('$at.watch: say which project files start it, like "templates/**"');
+    return null;
+  }
+  final debounce = v['debounce'] ?? defaultAutoDebounce.inMilliseconds;
+  if (debounce is! int || debounce < 0) {
+    problems.add('$at.debounce: expected milliseconds (got "$debounce")');
+    return null;
+  }
+  final on = v['on'] ?? false;
+  if (on is! bool) {
+    problems.add('$at.on: expected true or false');
+    return null;
+  }
+  return AutoRun(watch: watch, debounce: Duration(milliseconds: debounce), on: on);
 }
 
 const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowOnPreviewError'};
@@ -938,14 +1099,24 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     return _parseHtml(m, id, area, watch, title, src, run, where, problems);
   }
   if (kind == 'diff') {
-    final segments = m['segments'] == null ? const <String>[] : _strings(m['segments']);
-    if (segments == null) {
-      problems.add('$where.segments: expected a list of names');
+    // `segments: [a, b]`, or `{values: [a, b], optional: true, hide: "{{selected.env}}"}`.
+    final raw = m['segments'];
+    final spec = raw is Map ? raw : null;
+    final segments = raw == null ? const <String>[] : _strings(spec != null ? spec['values'] : raw);
+    final optional = spec?['optional'] ?? false;
+    final hide = spec?['hide'];
+    if (segments == null ||
+        (spec != null && (segments.isEmpty || spec.keys.any((k) => !const {'values', 'optional', 'hide'}.contains(k)))) ||
+        optional is! bool ||
+        (hide != null && hide is! String)) {
+      problems.add('$where.segments: expected a list of names, or {values: [a, b], optional: true, hide: "{{selected.<col>}}"}');
       return null;
     }
+    if (hide is String && !_textPlaceholders(hide, '$where.segments.hide', const _Allowed(), problems)) return null;
     final run = _command(m['run'], '$where.run', _Allowed(seg: segments.isNotEmpty), problems);
     if (run == null) return null;
-    return DiffBlock(id: id, area: area, watch: watch, run: run, title: title, segments: segments);
+    return DiffBlock(
+        id: id, area: area, watch: watch, run: run, title: title, segments: segments, optional: optional, hide: hide as String?);
   }
   final run = _command(m['run'], '$where.run', _Allowed(selected: !makesSelection), problems);
   if (run == null) return null;
@@ -956,13 +1127,13 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   }
   final columns = <ListColumn>[];
   for (final c in columnSpecs) {
-    final parts = c.split(':');
-    final format = parts.length > 1 ? parts.sublist(1).join(':') : 'text';
-    if (parts.first.isEmpty || !columnFormats.contains(format)) {
-      problems.add('$where.columns: "$c" should be name or name:text|chip|count');
+    final column = parseColumn(c);
+    if (column == null) {
+      problems.add('$where.columns: "$c" should be name or name:text|chip|count — a text column may add '
+          'a width (name:text:40em) and :start to cut long values at their start');
       return null;
     }
-    columns.add(ListColumn(parts.first, format));
+    columns.add(column);
   }
   final rowAllowed = _Allowed(selected: !makesSelection, row: true, checks: checks);
   ListCheck? check;
@@ -997,6 +1168,29 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     final a = _parseAction(body, rid, '$where.$rid', rowAllowed, problems, bulk: bulk);
     if (a != null) rowActions.add(a);
   }
+  ListSort? sort;
+  if (m['sort'] != null) {
+    final parts = '${m['sort']}'.split(':');
+    final order = parts.length == 2 ? parts[1] : 'asc';
+    if (m['sort'] is! String || parts.first.isEmpty || parts.length > 2 || !const {'asc', 'desc'}.contains(order)) {
+      problems.add('$where.sort: expected <col> or <col>:asc|desc (got "${m['sort']}")');
+      return null;
+    }
+    sort = ListSort(parts.first, descending: order == 'desc');
+  }
+  ListTree? tree;
+  if (m['tree'] case final Object raw) {
+    // `tree: path`, `tree: [env, path]` or `tree: {columns: …, open: <depth>}`.
+    final spec = raw is Map ? raw['columns'] : raw;
+    final columns = spec is String ? [spec] : _strings(spec);
+    final open = raw is Map ? raw['open'] ?? 0 : 0;
+    final extra = raw is Map && raw.keys.any((k) => k != 'columns' && k != 'open');
+    if (columns == null || columns.isEmpty || columns.any((c) => c.isEmpty) || open is! int || open < 0 || extra) {
+      problems.add('$where.tree: expected a column, a list of columns, or {columns: [env, path], open: <depth>}');
+      return null;
+    }
+    tree = ListTree(columns, open: open);
+  }
   return ListBlock(
     id: id,
     area: area,
@@ -1007,6 +1201,8 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     columns: columns,
     rowActions: rowActions,
     check: check,
+    sort: sort,
+    tree: tree,
   );
 }
 

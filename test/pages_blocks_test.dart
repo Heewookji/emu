@@ -74,6 +74,15 @@ pages:
             - action: { id: plan, run: [./tool/t.sh, plan, "{{input.env}}"] }
             - action: { id: echo, run: [./tool/t.sh, args, "{{input.env}}", "{{input.note}}"] }
             - action: { id: push, run: [./tool/t.sh, args, push, "{{input.env}}"], confirm: true }
+      - list:
+          id: files
+          run: [./tool/t.sh, list]
+          key: name
+          tree: [local, name]
+      - diff:
+          id: content
+          run: [./tool/t.sh, diff, "{{selected.name}}", "{{seg}}"]
+          segments: { values: [base, prod], optional: true, hide: "{{selected.env}}" }
 ''';
 
 const _script = r'''#!/bin/sh
@@ -138,6 +147,13 @@ void main() {
     ]);
   });
 
+  test('a tree list says which columns make the folders, for emu block', () async {
+    final (_, j) = await call('GET', '/api/pages/tpl/blocks/files');
+    expect(j['ok'], isTrue);
+    expect(j['tree'], ['local', 'name']);
+    expect((await call('GET', '/api/pages/tpl/blocks/items')).$2.containsKey('tree'), isFalse);
+  });
+
   test('a list that prints something else says so', () async {
     final (_, j) = await call('GET', '/api/pages/tpl/blocks/broken');
     expect(j['ok'], isFalse);
@@ -162,6 +178,26 @@ void main() {
     (_, j) = await call('GET', '/api/pages/tpl/blocks/changes?selected.name=card&seg=staging');
     expect(j['ok'], isFalse);
     expect(j['error'], contains('base, prod'));
+  });
+
+  test('optional segments: none unless one is asked for, and an empty one means none', () async {
+    var (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card');
+    expect(j['ok'], isTrue);
+    expect(j['seg'], '');
+    expect(j['command'], "./tool/t.sh diff card ''");
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=prod');
+    expect(j['patch'], contains('+new prod'));
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=');
+    expect(j['seg'], '');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/changes?selected.name=card&seg=');
+    expect(j['ok'], isFalse); // a segment must be picked there
+    expect(j['error'], 'seg must be one of base, prod (got "")');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=dev');
+    expect(j['error'], 'seg must be one of base, prod, or empty for none (got "dev")');
   });
 
   test('a row button gets its row, as one argument however it is spelled', () async {

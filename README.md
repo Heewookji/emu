@@ -759,7 +759,10 @@ emu report --mine                               # your reports and their status 
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
   refresh periodically. The first screenshot loads on its own once the app is running.
-  Drag the panel's left edge to widen it (kept in the browser; double-click to reset).
+  Drag the panel's left edge to widen it (kept in the browser; double-click to reset). Its › (or the
+  `s` key) folds it into a strip on the right edge for work that doesn't look at the device: the page
+  takes its width and no screenshot is fetched — auto refresh pauses — until a click on the strip (or
+  `s`) unfolds it (kept in the browser).
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
@@ -881,16 +884,17 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
+| `auto` | Toolbar actions: also run on their own when project files change — `{watch: ["tpl/**"], debounce: 400, on: false}` (below) |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. A folded area's blocks are fetched when it unfolds, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
-| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
-| `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways. Click a column head to sort by it (ascending, descending, then the command's order; numbers as numbers, versions like `1.2.10` after `1.2.9`); `sort: minVer:desc` sets where it starts. In the selection list, ↑/↓ pick the row above or below — the blocks that follow the pick fetch once the keys rest — and `/` jumps to the filter (↓ or Enter comes back) |
+| `diff` | a unified diff — anything else shows as numbered lines | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}`. As `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}`: nothing is picked at first and a click on the picked one turns it off (`{{seg}}` is then empty — show the file itself rather than a diff), and the segment equal to the picked row's `env` isn't offered |
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
 | `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
-| `output` | — | The page's last run: command, exit code, time, output |
+| `output` | — | The page's runs: one in flight shows its output as it comes, a finished one its command, exit code, time and output. Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
@@ -971,9 +975,39 @@ pages:
   row and fetches the list again. A row action with `bulk: true` also gets a button in the
   list's head that runs it once per checked row, in turn, stopping at the first failure (a
   `confirm: true` one asks once).
+- **Folders.** `tree: path` (or `tree: [env, path]`) draws a list as folders: the values of those
+  columns, each split at `/`, make a row's path — `prod / tpl / home / 4.48.0 / home_banner.txt`. Its
+  last part names the row; the parts before it are folders, with a row count, that a click opens or
+  closes. Rows keep their columns, buttons, pick and checks; a folder's checkbox checks every row
+  below it, and a closed folder holding the picked row is marked. Folders start closed —
+  `tree: {columns: [env, path], open: 1}` opens the first level — and what you open is kept per
+  browser. A filter also matches the path and shows the matching rows with every folder above them
+  open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
+  each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
+  the rows flat, the path columns first.
+- **Run on save.** An action with `auto:` also runs when a project file it watches changes — save
+  a template and it syncs and reloads with no click:
+
+  ```yaml
+  - action:
+      id: sync
+      run: [./tool/tpl.sh, sync]
+      then: reload
+      auto:
+        watch: ["tpl/**/*.txt"]   # project-relative globs
+        debounce: 400             # ms the changes must rest: a burst of saves runs it once
+  ```
+
+  ⚡ beside the button switches it on and off (`on: true` starts it on). The server keeps the switch
+  per project (`.emu/pages_auto.json`) and does the watching, so it works with no dashboard open. A
+  file that changes while it runs makes it run once more right after; what changes during that once
+  more doesn't count — a tool that writes the files it watches runs twice, not forever. A run shows in
+  the output block and the Logs tab like a press (`[ext] … (auto: tpl/a.txt changed)`); a failed one
+  also shows a toast. `auto:` takes toolbar actions with nothing to fill in or confirm: no
+  placeholders, `confirm`, `needs` or `openUrl`. `emu pages` shows the switch.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
-  changes — git-ignored work folders included. The picked row and segment are remembered
-  per browser.
+  changes — git-ignored work folders included. The picked row, the segment and a clicked sort
+  are remembered per browser.
 - Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
   link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
   waits for the app to settle) and refreshes the screen panel. A deep-link page needs no
@@ -1233,6 +1267,7 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | `server.log` | Server startup diagnostics |
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
+| `pages_auto.json` | Dashboard pages' `auto:` switches, as flipped |
 
 ## Device ownership
 

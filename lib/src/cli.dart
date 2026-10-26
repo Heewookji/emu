@@ -2169,15 +2169,23 @@ Future<int> _pagesCmd(List<String> args) async {
     print('${page['id']}  ${page['title']}');
     for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
       final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
+      final auto = i['auto'] as Map?;
+      // The switch as the session has it; without one, where it starts.
+      final autoOn = (data['auto'] as Map?)?['${page['id']}.${i['id']}'] ?? auto?['on'];
       final notes = [
         if (i['then'] != 'none') 'then ${i['then']}',
         if (i['confirm'] == true) 'asks first',
         if (i['needsChecked'] != null) 'needs a checked row in ${i['needsChecked']}',
+        if (auto != null) 'runs on change of ${(auto['watch'] as List).join(', ')}: ${autoOn == true ? 'on' : 'off'}',
       ];
       print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
-      final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
+      final segList = b['segments'] as List? ?? const [];
+      final segs = segList.isEmpty
+          ? ''
+          : '   (vs ${segList.join('|')}${b['segmentsOptional'] == true ? ' or none' : ''}'
+              '${b['segmentsHide'] != null ? ', hides ${b['segmentsHide']}' : ''})';
       // A form with no fields is a button panel.
       final kind = b['kind'] == 'form' && (b['fields'] as List).isEmpty ? 'panel' : b['kind'];
       final check = b['check'] as Map?;
@@ -2669,7 +2677,8 @@ Future<int> _blockCmd(List<String> args) async {
       '   What a list, diff or html block of a dashboard page shows: the rows its\n'
       '   command prints as a table, its diff, or an html block\'s data. --select\n'
       '   fills {{selected.<col>}} the way picking a row in the dashboard does;\n'
-      '   --seg picks a diff\'s segment.';
+      '   --seg picks a diff\'s segment (left out: the first, or none when the\n'
+      '   segments are optional).';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final target = res.rest.length == 1 ? res.rest.first : '';
@@ -2727,14 +2736,15 @@ Future<int> _blockCmd(List<String> args) async {
     print('(no rows)');
     return 0;
   }
-  print(_table(rows));
+  // A tree list (`tree:`) shows its path columns first.
+  print(_table(rows, first: [for (final c in r['tree'] as List? ?? const []) '$c']));
   if (r['truncated'] != null) print('(first ${rows.length} of ${r['truncated']} rows)');
   return 0;
 }
 
-/// [rows] as aligned columns (every key, in first-seen order).
-String _table(List<Map<String, dynamic>> rows) {
-  final cols = <String>{for (final r in rows) ...r.keys}.toList();
+/// [rows] as aligned columns (every key, in first-seen order — [first] before the rest).
+String _table(List<Map<String, dynamic>> rows, {List<String> first = const []}) {
+  final cols = <String>{...first.where((c) => rows.any((r) => r.containsKey(c))), for (final r in rows) ...r.keys}.toList();
   String cell(Object? v) {
     final s = v == null ? '' : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
     final line = s.replaceAll('\n', ' ');

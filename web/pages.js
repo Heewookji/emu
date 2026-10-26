@@ -27,18 +27,24 @@ const pageState = {
   pages: [],
   problems: [],
   current: 'debug',
-  last: {},              // page id → its last run
+  history: {},           // page id → its recent finished runs, newest first (this tab only)
+  viewing: {},           // page id → the history entry the output shows; null: the newest, or the run in flight
+  live: {},              // 'page.item' → the output of a run in flight, as it comes
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
+  auto: {},              // 'page.item' → whether an `auto:` action runs on file changes (the server keeps it)
   selected: {},          // page id → key value of the picked row
   checked: {},           // 'page.block' → key values of the checked rows (check: true)
   bulk: {},              // 'page.block.action' → progress of a bulk run, "2/5"
   seg: {},               // 'page.block' → chosen segment
+  sort: {},              // 'page.block' → {key, dir} from a column head click; null: the command's order
+  tree: {},              // 'page.block' → {folder key: open} where a click changed it
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
+  folded: {},            // page id → the areas folded to a strip
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -48,12 +54,18 @@ try {
   if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
   if (prefs.checked && typeof prefs.checked === 'object') pageState.checked = prefs.checked;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
+  if (prefs.sort && typeof prefs.sort === 'object') pageState.sort = prefs.sort;
+  if (prefs.tree && typeof prefs.tree === 'object') pageState.tree = prefs.tree;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
+  if (prefs.folded && typeof prefs.folded === 'object') pageState.folded = prefs.folded;
 } catch (_) {}
 function savePagePrefs() {
   try {
-    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, input: pageState.input, sizes: pageState.sizes }));
+    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
+      selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
+      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded,
+    }));
   } catch (_) {}
 }
 
@@ -67,7 +79,8 @@ async function loadPages() {
     const j = await (await api('/api/pages')).json();
     pageState.pages = j.pages || [];
     pageState.problems = j.problems || [];
-    Object.assign(pageState.last, j.last || {});
+    for (const [id, run] of Object.entries(j.last || {})) remember(id, run);
+    pageState.auto = j.auto || {};
   } catch (_) { return; }
   if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
   renderPageTabs();
@@ -122,7 +135,11 @@ function selectedRow(page) {
   return rows.find(r => rowKeyOf(list, r) === key) || null;
 }
 
-function select(page, list, row) {
+const followTimers = {}; // page id → the pending fetch after a pick made with the arrow keys
+
+// [soon]: the pick came from an arrow key — what follows it is fetched once
+// the keys rest, so stepping through rows fetches only the row stopped at.
+function select(page, list, row, { soon = false } = {}) {
   const key = rowKeyOf(list, row);
   if (pageState.selected[page.id] === key) return;
   pageState.selected[page.id] = key;
@@ -130,9 +147,26 @@ function select(page, list, row) {
   renderListRows(page, list);
   renderPageBar(page);
   // Everything that reads {{selected.*}} follows the pick.
-  loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
-  // A frame that isn't fetched again still hears of the pick (onData's selected).
-  for (const b of page.blocks) if (b.kind === 'html' && !usesSelection(b)) postFrameData(page, b);
+  // A frame that isn't fetched again still hears of the pick (onData's
+  // selected) — at the same moment the fetched ones do.
+  const follow = () => {
+    loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+    for (const b of page.blocks) if (b.kind === 'html' && !usesSelection(b)) postFrameData(page, b);
+  };
+  clearTimeout(followTimers[page.id]);
+  if (soon) followTimers[page.id] = setTimeout(follow, 200);
+  else follow();
+}
+
+// ↑/↓ in the selection list: pick the row above or below, as shown (filter
+// and order applied).
+function stepSelection(page, list, step) {
+  const rows = listShown[blockKey(page, list)] || [];
+  if (!rows.length) return;
+  const i = rows.findIndex(r => rowKeyOf(list, r) === pageState.selected[page.id]);
+  const next = i < 0 ? (step > 0 ? 0 : rows.length - 1) : Math.min(Math.max(i + step, 0), rows.length - 1);
+  select(page, list, rows[next], { soon: true });
+  blockEl(list)?.querySelector('tr.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
 // Placeholder values sent with a run: the picked row, the checked rows and,
@@ -262,7 +296,8 @@ function renderPageBar(page) {
     }
     const title = blocked ? (usesSelection(item) && !hasSelection ? 'select a row first' : `check a row in ${item.needsChecked} first`) : item.command;
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
-      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
+      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`
+      + (item.auto ? autoSwitchHtml(page, item) : '');
   }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
@@ -277,6 +312,42 @@ function renderPageBar(page) {
     };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
+  pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
+}
+
+// ---- auto: -------------------------------------------------------------------
+// ⚡ beside an `auto:` action: whether the server runs it when the files it
+// watches change. The server keeps the switch (per project) and runs it with
+// no dashboard open; a failed run says so here.
+
+function autoSwitchHtml(page, item) {
+  const on = !!pageState.auto[itemKey(page, item)];
+  const title = `${on ? 'Runs' : 'Off — click to run'} on its own when these change: ${item.auto.watch.join(', ')}`;
+  return `<button class="ext-auto${on ? ' on' : ''}" data-auto="${escapeHtml(item.id)}" aria-pressed="${on}"`
+    + ` title="${escapeHtml(title)}">⚡</button>`;
+}
+
+async function switchAuto(page, id) {
+  const key = `${page.id}.${id}`;
+  try {
+    const r = await api(`/api/pages/${encodeURIComponent(page.id)}/auto/${encodeURIComponent(id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !pageState.auto[key] }),
+    });
+    const j = await r.json();
+    if (!j.ok) { toast(`auto ${id}: ${j.error || 'failed'}`); return; }
+    pageState.auto[key] = j.on;
+  } catch (e) {
+    toast(`auto ${id} failed: ${e}`);
+    return;
+  }
+  if (currentPage() === page) renderPageBar(page);
+}
+
+// Switched here, in another tab or by the CLI.
+function onPageAuto(msg) {
+  pageState.auto[`${msg.page}.${msg.item}`] = !!msg.on;
+  const page = currentPage();
+  if (page?.id === msg.page) renderPageBar(page);
 }
 
 async function refreshToggles(page) {
@@ -342,8 +413,20 @@ function renderRunning(page) {
   }
 }
 
+const HISTORY_MAX = 10;
+const LIVE_LIMIT = 256 * 1024; // as much of a run's output as the server keeps
+
+// A finished run, once — the POST answer and the broadcast both bring it.
+function remember(pageId, run) {
+  if (!run?.at) return;
+  const hist = pageState.history[pageId] || [];
+  if (hist.some(r => r.item === run.item && r.at === run.at)) return;
+  pageState.history[pageId] = [run, ...hist].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, HISTORY_MAX);
+  pageState.viewing[pageId] = null; // show what just finished
+}
+
 function finishRun(page, item, key, run, quiet) {
-  pageState.last[page.id] = run;
+  remember(page.id, run);
   if (run.state) pageState.toggles[key] = run.state;
   if (!(quiet && run.ok)) toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
   if (item.openUrl && run.ok) refreshShot(); // the server already waited for the app to settle
@@ -355,11 +438,21 @@ function onPageRun(msg) {
   const page = pageState.pages.find(p => p.id === msg.page);
   if (!page) return;
   const key = `${msg.page}.${msg.item}`;
-  if (msg.event === 'started') pageState.running.add(key);
-  else if (msg.event === 'finished') {
+  if (msg.event === 'output') {
+    pageState.live[key] = ((pageState.live[key] || '') + (msg.chunk || '')).slice(-LIVE_LIMIT);
+    if (currentPage() === page) renderOutputs(page);
+    return;
+  }
+  if (msg.event === 'started') {
+    pageState.running.add(key);
+    pageState.live[key] = '';
+    pageState.viewing[page.id] = null; // follow it
+  } else if (msg.event === 'finished') {
     pageState.running.delete(key);
-    pageState.last[page.id] = msg.run;
+    delete pageState.live[key];
+    remember(page.id, msg.run);
     if (msg.run?.state) pageState.toggles[key] = msg.run.state;
+    if (msg.auto && !msg.run?.ok) toast(`⚡ ${msg.item} (on change): ${msg.run?.error || 'failed'}`);
   }
   if (currentPage() !== page) return;
   renderRunning(page);
@@ -389,11 +482,13 @@ function renderPageBody(page) {
   const areas = { left: [], main: [], bottom: [] };
   for (const b of page.blocks) areas[b.area]?.push(b);
   const body = pageEls.body;
-  body.classList.toggle('no-left', !areas.left.length);
-  body.classList.toggle('no-main', !areas.main.length);
   body.innerHTML = page.blocks.length
-    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}"></div>`).join('')
+    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}">`
+      + (areas[a].length ? areaFoldHtml(a, areas[a]) : '') + '</div>').join('')
     : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
+  applyAreas(page);
+  body.querySelectorAll('[data-fold-area]').forEach(b => { b.onclick = () => foldArea(page, b.dataset.foldArea); });
+  body.querySelectorAll('[data-unfold-area]').forEach(b => { b.onclick = () => unfoldArea(page, b.dataset.unfoldArea); });
   for (const [area, blocks] of Object.entries(areas)) {
     const host = body.querySelector(`[data-area="${area}"]`);
     for (const b of blocks) {
@@ -403,10 +498,73 @@ function renderPageBody(page) {
       else if (b.kind === 'diff') initDiff(page, b, el);
       else if (b.kind === 'html') initHtml(page, b, el);
       else if (b.kind === 'form') initForm(page, b, el);
+      else if (b.kind === 'output') initOutput(page, b, el);
     }
   }
   addResizers(page, areas);
   renderOutputs(page);
+}
+
+// ---- folded areas --------------------------------------------------------------
+// Each area with blocks folds (the chevron in its first block's head) to a
+// strip of its blocks' titles, and the others take its room; a click on the
+// strip unfolds it in place. Kept per page. The last unfolded area doesn't
+// fold. A folded area's blocks keep the pick and checks: those lists are
+// still fetched, the rest when it unfolds.
+
+// [fold, unfold] chevrons: toward where the area goes, and back.
+const FOLD_ICONS = { left: ['‹', '›'], main: ['⌃', '⌄'], bottom: ['⌄', '⌃'] };
+
+function areaFolded(page, area) { return (pageState.folded[page.id] || []).includes(area); }
+
+function areasWithBlocks(page) { return ['left', 'main', 'bottom'].filter(a => page.blocks.some(b => b.area === a)); }
+
+function areaFoldHtml(area, blocks) {
+  const titles = blocks.map(b => b.title || b.kind).join(' · ');
+  return `<button class="area-fold" data-fold-area="${area}" title="Fold this area">${FOLD_ICONS[area][0]}</button>`
+    + `<button class="fold-bar area-fold-bar" data-unfold-area="${area}" title="Unfold">`
+    + `<span class="fold-icon">${FOLD_ICONS[area][1]}</span><span class="fold-titles">${escapeHtml(titles)}</span></button>`;
+}
+
+// The grid follows what's folded: the left area folds to an upright strip,
+// main and bottom to a bar — or, both folded, the right column to a strip.
+function applyAreas(page) {
+  const body = pageEls.body;
+  const used = areasWithBlocks(page);
+  const folded = (a) => used.includes(a) && areaFolded(page, a);
+  const right = ['main', 'bottom'].filter(a => used.includes(a));
+  const rightFolded = right.length > 0 && right.every(folded);
+  for (const a of ['left', 'main', 'bottom']) {
+    body.classList.toggle(`no-${a}`, !used.includes(a));
+    const el = body.querySelector(`[data-area="${a}"]`);
+    if (!el) continue;
+    el.classList.toggle('folded', folded(a));
+    el.classList.toggle('upright', folded(a) && (a === 'left' || rightFolded));
+    const icon = el.querySelector('.area-fold-bar .fold-icon');
+    if (icon) icon.textContent = a !== 'left' && rightFolded ? '‹' : FOLD_ICONS[a][1];
+  }
+  body.classList.toggle('fold-left', folded('left'));
+  body.classList.toggle('fold-right', rightFolded);
+  body.classList.toggle('fold-main', folded('main') && !rightFolded);
+  body.classList.toggle('fold-bottom', folded('bottom') && !rightFolded);
+  const unfolded = used.filter(a => !folded(a));
+  body.querySelectorAll('[data-fold-area]').forEach(b => { b.hidden = unfolded.length < 2; });
+}
+
+function foldArea(page, area) {
+  pageState.folded[page.id] = [...new Set([...(pageState.folded[page.id] || []), area])];
+  savePagePrefs();
+  applyAreas(page);
+}
+
+function unfoldArea(page, area) {
+  const folded = (pageState.folded[page.id] || []).filter(a => a !== area);
+  if (folded.length) pageState.folded[page.id] = folded;
+  else delete pageState.folded[page.id];
+  savePagePrefs();
+  applyAreas(page);
+  // What it skipped while folded.
+  loadBlocks(page, page.blocks.filter(b => b.area === area && pageState.stale.has(blockKey(page, b))));
 }
 
 // ---- panel sizes ---------------------------------------------------------------
@@ -461,7 +619,7 @@ function addResizer(page, host, axis) {
 function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
 
 function renderOutputs(page) {
-  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) el.innerHTML = outputHtml(page); }
+  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) renderOutput(page, el); }
 }
 
 // Fetch list rows / diff patches. A block that reads {{selected.*}} waits for
@@ -472,6 +630,8 @@ function loadBlocks(page, blocks) {
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
     if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
+    // A folded area is fetched when it unfolds — but the lists that hold the pick and the checks always are.
+    if (areaFolded(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
@@ -547,13 +707,46 @@ function initList(page, block, el) {
     + `<input class="blk-search" type="text" placeholder="filter…" autocomplete="off" spellcheck="false" /></div>`
     + '<div class="blk-scroll" data-rows></div>';
   const search = el.querySelector('.blk-search');
+  const rowsEl = el.querySelector('[data-rows]');
   search.value = pageState.search[key] || '';
   search.addEventListener('input', () => { pageState.search[key] = search.value; renderListRows(page, block); });
+  // A value cut with an ellipsis shows whole on hover.
+  rowsEl.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest?.('.cell');
+    if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent;
+  });
+  if (block.id !== page.selection) return;
+  // The selection list takes the keys once clicked: ↑/↓ pick, / goes to the
+  // filter, and ↓ or Enter there comes back.
+  rowsEl.tabIndex = 0;
+  rowsEl.addEventListener('keydown', (e) => {
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      stepSelection(page, block, e.key === 'ArrowDown' ? 1 : -1);
+    } else if (e.key === '/') {
+      e.preventDefault();
+      search.focus();
+      search.select();
+    }
+  });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); rowsEl.focus(); }
+  });
 }
 
+// A tree's path columns are drawn as its folders, so they aren't columns by default.
 function listColumns(block, rows) {
   if (block.columns.length) return block.columns;
-  return Object.keys(rows[0] || {}).map(k => ({ key: k, format: 'text' }));
+  const path = new Set(block.tree?.columns || []);
+  return Object.keys(rows[0] || {}).filter(k => !path.has(k)).map(k => ({ key: k, format: 'text' }));
+}
+
+// What a filter looks through: the columns, and a tree row's path.
+function rowTexts(block, cols, row) {
+  const texts = cols.map(c => cellText(row[c.key]));
+  if (block.tree) texts.push(treePath(block, row).join('/'));
+  return texts;
 }
 
 function cellText(v) {
@@ -569,17 +762,150 @@ const CHIP_KINDS = [
   ['bad', /^(error|failed|fail|invalid|missing|broken)$/i],
 ];
 
-function cellHtml(v, format) {
-  if (format === 'chip') {
+// A text value longer than its column's width (col.width, else 32em) is cut
+// with an ellipsis — at its start for `:start`, so a path keeps its end.
+function cellHtml(v, col) {
+  if (col.format === 'chip') {
     const s = typeof v === 'boolean' ? (v ? 'on' : 'off') : cellText(v);
     const kind = CHIP_KINDS.find(([, re]) => re.test(s))?.[0] || 'plain';
     return s ? `<span class="chip ${kind}">${escapeHtml(s)}</span>` : '';
   }
-  if (format === 'count') {
+  if (col.format === 'count') {
     const n = Number(v) || 0;
     return `<span class="${n ? 'count-hot' : 'muted'}">${n}</span>`;
   }
-  return escapeHtml(cellText(v));
+  const style = col.width ? ` style="max-width: ${escapeHtml(col.width)}"` : '';
+  const text = escapeHtml(cellText(v));
+  return col.clip === 'start'
+    ? `<span class="cell clip-start"${style}><span>${text}</span></span>`
+    : `<span class="cell"${style}>${text}</span>`;
+}
+
+// ---- list order --------------------------------------------------------------
+// A click on a column head sorts by it — ascending, descending, then the
+// command's own order again. `sort:` in emu.yaml is where a list starts; a
+// click is kept per browser.
+
+const listShown = {}; // 'page.block' → the rows as last drawn (filter and order applied), for ↑/↓
+
+function sortOf(page, block) {
+  const key = blockKey(page, block);
+  return key in pageState.sort ? pageState.sort[key] : block.sort || null;
+}
+
+function cycleSort(page, block, col) {
+  const cur = sortOf(page, block);
+  pageState.sort[blockKey(page, block)] = cur?.key !== col ? { key: col, dir: 'asc' }
+    : cur.dir === 'asc' ? { key: col, dir: 'desc' } : null;
+  savePagePrefs();
+  renderListRows(page, block);
+}
+
+// Numbers as numbers and text in natural order, so a version 1.2.10 comes
+// after 1.2.9. Blanks go last either way; equal values keep the command's order.
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function sortRows(rows, sort, format) {
+  if (!sort) return rows;
+  const dir = sort.dir === 'desc' ? -1 : 1;
+  const blank = (v) => v === null || v === undefined || v === '';
+  const compare = (a, b) => format === 'count' || (typeof a === 'number' && typeof b === 'number')
+    ? (Number(a) || 0) - (Number(b) || 0)
+    : naturalOrder.compare(cellText(a), cellText(b));
+  return rows.map((r, i) => [r, i]).sort(([a, i], [b, j]) => {
+    const x = a[sort.key], y = b[sort.key];
+    if (blank(x) || blank(y)) return blank(x) === blank(y) ? i - j : blank(x) ? 1 : -1;
+    return dir * compare(x, y) || i - j;
+  }).map(([r]) => r);
+}
+
+// A column head; [c.label] for one that isn't a column (a tree's names).
+function sortHead(c, sort) {
+  const dir = sort?.key === c.key ? sort.dir : null;
+  const label = c.label ?? c.key;
+  return `<th class="sortable${dir ? ' sorted' : ''}" data-sort="${escapeHtml(c.key)}" title="sort by ${escapeHtml(label)}"`
+    + ` aria-sort="${dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'}">${escapeHtml(label)}`
+    + `<span class="sort-mark">${dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : ''}</span></th>`;
+}
+
+// ---- tree ----------------------------------------------------------------------
+// `tree: [env, path]`: a row's path is the values of those columns, each split
+// at `/`. Its last part names the row; the parts before it are folders, which
+// a click opens or closes. Folders deeper than `open:` start closed, and a
+// click is kept per browser. A filter shows the matching rows with every
+// folder above them open. Folders come first, in the order the command lists
+// them — or by name, when the tree's own head sorts.
+
+const TREE_SORT = '(tree)'; // the sort key of a tree's head: folder and row names
+
+function treePath(block, row) {
+  const parts = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
+  return parts.length ? parts : [rowKeyOf(block, row) ?? ''];
+}
+
+// The folder keys ('prod/tpl/home') above [row].
+function folderKeysOf(block, row) {
+  const keys = new Set();
+  if (!row) return keys;
+  const parts = treePath(block, row);
+  for (let i = 1; i < parts.length; i++) keys.add(parts.slice(0, i).join('/'));
+  return keys;
+}
+
+// [rows] as folders: {key, name, depth, dirs: name → folder, rows: its own rows, all: every row below}.
+function buildTree(block, rows) {
+  const root = { key: '', name: '', depth: -1, dirs: new Map(), rows: [], all: rows };
+  for (const row of rows) {
+    let node = root;
+    for (const part of treePath(block, row).slice(0, -1)) {
+      let next = node.dirs.get(part);
+      if (!next) {
+        next = { key: node.key ? `${node.key}/${part}` : part, name: part, depth: node.depth + 1, dirs: new Map(), rows: [], all: [] };
+        node.dirs.set(part, next);
+      }
+      next.all.push(row);
+      node = next;
+    }
+    node.rows.push(row);
+  }
+  return root;
+}
+
+// The open part of the tree, top to bottom: {dir, open} and {row, depth}.
+function treeItems(page, block, root, { filtering, sort, format }) {
+  const opened = pageState.tree[blockKey(page, block)] || {};
+  const byName = sort?.key === TREE_SORT;
+  const dir = sort?.dir === 'desc' ? -1 : 1;
+  const leaf = (r) => treePath(block, r).at(-1);
+  const items = [];
+  const walk = (node) => {
+    const dirs = [...node.dirs.values()];
+    if (byName) dirs.sort((a, b) => dir * naturalOrder.compare(a.name, b.name));
+    for (const d of dirs) {
+      const open = filtering || (d.key in opened ? opened[d.key] : d.depth < block.tree.open);
+      items.push({ dir: d, open });
+      if (open) walk(d);
+    }
+    const rows = byName ? [...node.rows].sort((a, b) => dir * naturalOrder.compare(leaf(a), leaf(b))) : sortRows(node.rows, sort, format);
+    for (const row of rows) items.push({ row, depth: node.depth + 1 });
+  };
+  walk(root);
+  return items;
+}
+
+function treeIndent(depth) { return 10 + depth * 16; }
+
+function toggleDir(page, block, d) {
+  const key = blockKey(page, block);
+  const opened = { ...pageState.tree[key] };
+  const initial = d.depth < block.tree.open;
+  const open = !(d.key in opened ? opened[d.key] : initial);
+  if (open === initial) delete opened[d.key];
+  else opened[d.key] = open;
+  if (Object.keys(opened).length) pageState.tree[key] = opened;
+  else delete pageState.tree[key];
+  savePagePrefs();
+  renderListRows(page, block);
 }
 
 function renderListRows(page, block) {
@@ -591,42 +917,78 @@ function renderListRows(page, block) {
   const rows = entry?.result?.ok ? entry.result.rows : null;
   el.classList.toggle('loading', !!entry?.loading);
   renderChecksHead(page, block, el);
-  if (!rows) { host.innerHTML = blockNote(page, block, entry); el.querySelector('[data-count]').textContent = ''; return; }
+  if (!rows) {
+    listShown[key] = [];
+    host.innerHTML = blockNote(page, block, entry);
+    el.querySelector('[data-count]').textContent = '';
+    return;
+  }
   const cols = listColumns(block, rows);
   const filter = (pageState.search[key] || '').toLowerCase();
-  const shown = filter ? rows.filter(r => cols.some(c => cellText(r[c.key]).toLowerCase().includes(filter))) : rows;
+  const sort = sortOf(page, block);
+  const format = cols.find(c => c.key === sort?.key)?.format;
+  const matched = filter ? rows.filter(r => rowTexts(block, cols, r).some(t => t.toLowerCase().includes(filter))) : rows;
+  // What's drawn, top to bottom: rows ({row, depth}) and, in a tree, folders ({dir, open}).
+  const items = block.tree
+    ? treeItems(page, block, buildTree(block, matched), { filtering: !!filter, sort, format })
+    : sortRows(matched, sort, format).map(row => ({ row, depth: 0 }));
+  const shown = listShown[key] = items.filter(i => i.row).map(i => i.row);
+  const dirs = new Map(items.filter(i => i.dir).map(i => [i.dir.key, i.dir]));
   const selectable = block.id === page.selection;
   const picked = selectable ? pageState.selected[page.id] : undefined;
-  el.querySelector('[data-count]').textContent = filter ? `${shown.length} / ${rows.length}` : `${rows.length}`;
+  // A closed folder that holds the picked row says so.
+  const pickedIn = block.tree && selectable ? folderKeysOf(block, selectedRow(page)) : new Set();
+  el.querySelector('[data-count]').textContent = filter ? `${matched.length} / ${rows.length}` : `${rows.length}`;
   const actions = block.rowActions;
   const checked = block.check ? checkedKeys(page, block) : null;
   const checking = block.check && pageState.running.has(`${page.id}.${block.id}.check`);
-  const shownChecked = checked ? shown.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
-  const checkAll = checked
-    ? `<th class="lst-check"><input type="checkbox" data-check-all title="check all shown"${shown.length && shownChecked === shown.length ? ' checked' : ''}${checking || !shown.length ? ' disabled' : ''} /></th>` : '';
+  const checkedIn = (rs) => checked ? rs.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
+  const checkBox = (attr, rs) => `<input type="checkbox" ${attr}${rs.length && checkedIn(rs) === rs.length ? ' checked' : ''}`
+    + `${checking || !rs.length ? ' disabled' : ''} />`;
+  const checkAll = checked ? `<th class="lst-check">${checkBox('data-check-all title="check all shown"', matched)}</th>` : '';
+  const treeHead = block.tree ? sortHead({ key: TREE_SORT, label: block.tree.columns.join(' / ') }, sort) : '';
+  const buttons = () => actions.map(a => {
+    const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+    const blocked = blockedByChecks(page, a);
+    const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
+    return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+  }).join('');
+  const rowHtml = ({ row: r, depth }) => {
+    const rk = rowKeyOf(block, r);
+    return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
+      + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
+      + (block.tree ? `<td class="tree-name" style="padding-left: ${treeIndent(depth) + 14}px"><span class="cell">${escapeHtml(treePath(block, r).at(-1))}</span></td>` : '')
+      + cols.map(c => `<td>${cellHtml(r[c.key], c)}</td>`).join('')
+      + (actions.length ? `<td class="row-actions">${buttons()}</td>` : '')
+      + '</tr>';
+  };
+  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}">`
+    + (checked ? `<td class="lst-check">${checkBox('data-check-dir', d.all)}</td>` : '')
+    + `<td class="tree-name" colspan="${cols.length + 1}" style="padding-left: ${treeIndent(d.depth)}px">`
+    + `<span class="tree-caret">${open ? '▾' : '▸'}</span>${escapeHtml(d.name)}<span class="tree-count">${d.all.length}</span></td>`
+    + (actions.length ? '<td class="row-actions"></td>' : '')
+    + '</tr>';
   host.innerHTML = rows.length
-    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th></th>' : ''}</tr></thead><tbody>`
-      + shown.map((r) => {
-        const rk = rowKeyOf(block, r);
-        return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
-          + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
-          + cols.map(c => `<td>${cellHtml(r[c.key], c.format)}</td>`).join('')
-          + (actions.length ? `<td class="row-actions">${actions.map(a => {
-            const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
-            const blocked = blockedByChecks(page, a);
-            const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
-            return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
-          }).join('')}</td>` : '')
-          + '</tr>';
-      }).join('') + '</tbody></table>'
+    ? `<table class="lst${block.tree ? ' tree' : ''}"><thead><tr>${checkAll}${treeHead}${cols.map(c => sortHead(c, sort)).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
+      + items.map(i => i.dir ? dirHtml(i) : rowHtml(i)).join('') + '</tbody></table>'
       + (entry.result.truncated ? `<div class="ext-empty">first ${rows.length} of ${entry.result.truncated} rows</div>` : '')
     : '<div class="ext-empty">no rows</div>';
   const byKey = new Map(shown.map(r => [rowKeyOf(block, r) ?? '', r]));
+  host.querySelectorAll('th[data-sort]').forEach(th => { th.onclick = () => cycleSort(page, block, th.dataset.sort); });
   const all = host.querySelector('[data-check-all]');
   if (all) {
-    all.indeterminate = shownChecked > 0 && shownChecked < shown.length;
-    all.onclick = (e) => { e.preventDefault(); setChecked(page, block, shown, shownChecked < shown.length); };
+    all.indeterminate = checkedIn(matched) > 0 && checkedIn(matched) < matched.length;
+    all.onclick = (e) => { e.preventDefault(); setChecked(page, block, matched, checkedIn(matched) < matched.length); };
   }
+  host.querySelectorAll('tr[data-dir]').forEach(tr => {
+    const d = dirs.get(tr.dataset.dir);
+    if (!filter) tr.onclick = () => toggleDir(page, block, d); // a filter keeps every folder above a match open
+    const box = tr.querySelector('[data-check-dir]');
+    if (!box) return;
+    box.indeterminate = checkedIn(d.all) > 0 && checkedIn(d.all) < d.all.length;
+    box.parentElement.onclick = (e) => e.stopPropagation(); // checking a folder doesn't fold it
+    box.onclick = (e) => { e.preventDefault(); setChecked(page, block, d.all, checkedIn(d.all) < d.all.length); };
+  });
   host.querySelectorAll('tr[data-row]').forEach(tr => {
     const row = byKey.get(tr.dataset.row);
     if (selectable) tr.onclick = () => select(page, block, row);
@@ -663,17 +1025,32 @@ function renderChecksHead(page, block, el) {
   });
 }
 
-// diff: the unified diff its command prints, drawn like the Changes tab.
+// diff: the unified diff its command prints, drawn like the Changes tab;
+// output that isn't a diff (a file shown as it is) is drawn as numbered lines.
+// Segments pick what it compares against ({{seg}}). With `optional:` none is
+// picked at first and a click on the picked one turns it off — {{seg}} is
+// then empty; `hide:` leaves out the segment equal to that value of the
+// picked row. A segment out of view counts as off (or the first shown, when
+// one must be picked); the choice itself is kept.
+function shownSegments(page, block) {
+  if (!block.segmentsHide) return block.segments;
+  const sel = selectedRow(page);
+  const hidden = block.segmentsHide.replace(/\{\{\s*selected\.([A-Za-z0-9_-]+)\s*\}\}/g, (_, col) => (sel ? cellText(sel[col]) : ''));
+  return block.segments.filter(s => s !== hidden);
+}
+
 function segOf(page, block) {
+  const shown = shownSegments(page, block);
   const s = pageState.seg[blockKey(page, block)];
-  return block.segments.includes(s) ? s : block.segments[0];
+  if (shown.includes(s)) return s;
+  return block.segmentsOptional ? '' : shown[0] ?? block.segments[0];
 }
 
 function initDiff(page, block, el) {
   el.innerHTML = `<div class="blk-head"><span class="name" data-title>${escapeHtml(block.title)}</span>`
     + `<span class="plus" data-plus></span><span class="minus" data-minus></span>`
     + `<span class="cmd" data-cmd title="${escapeHtml(block.command)}"></span>`
-    + (block.segments.length ? `<span class="meta muted">vs</span><span class="seg" data-seg></span>` : '')
+    + (block.segments.length ? `<span class="seg-pick"><span class="muted" data-vs>vs</span><span class="seg" data-seg></span></span>` : '')
     + '</div><section class="diff-view" data-diff></section>';
   renderSegments(page, block, el);
 }
@@ -682,10 +1059,15 @@ function renderSegments(page, block, el) {
   const host = el.querySelector('[data-seg]');
   if (!host) return;
   const cur = segOf(page, block);
-  host.innerHTML = block.segments.map(s => `<button class="${s === cur ? 'on' : ''}" data-s="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('');
+  const shown = shownSegments(page, block);
+  host.hidden = !shown.length;
+  el.querySelector('[data-vs]').hidden = !cur || !shown.length; // nothing to compare against: the output as it is
+  host.innerHTML = shown.map(s => `<button class="${s === cur ? 'on' : ''}" data-s="${escapeHtml(s)}"`
+    + `${block.segmentsOptional && s === cur ? ' title="click again to compare with nothing"' : ''}>${escapeHtml(s)}</button>`).join('');
   host.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
-      pageState.seg[blockKey(page, block)] = b.dataset.s;
+      const off = block.segmentsOptional && b.dataset.s === segOf(page, block);
+      pageState.seg[blockKey(page, block)] = off ? '' : b.dataset.s;
       savePagePrefs();
       renderSegments(page, block, el);
       loadBlock(page, block);
@@ -699,6 +1081,7 @@ function renderDiffView(page, block) {
   const entry = pageState.data[blockKey(page, block)];
   const r = entry?.result;
   el.classList.toggle('loading', !!entry?.loading);
+  renderSegments(page, block, el); // the picked row may hide one
   const sel = usesSelection(block) ? selectedRow(page) : null;
   const list = selectionList(page);
   el.querySelector('[data-title]').textContent = sel && list ? `${block.title} · ${rowKeyOf(list, sel)}` : block.title;
@@ -709,13 +1092,20 @@ function renderDiffView(page, block) {
     view.innerHTML = blockNote(page, block, entry);
     return;
   }
-  const files = splitPatch(r.patch || '');
+  const patch = r.patch || '';
+  const files = splitPatch(patch);
   const added = files.reduce((n, f) => n + f.added, 0), deleted = files.reduce((n, f) => n + f.deleted, 0);
   el.querySelector('[data-plus]').textContent = files.length ? `+${added}` : '';
   el.querySelector('[data-minus]').textContent = files.length ? `−${deleted}` : '';
   const top = view.scrollTop;
-  view.innerHTML = patchFilesHtml(files);
+  view.innerHTML = files.length || !patch.trim() ? patchFilesHtml(files) : textLinesHtml(patch);
   view.scrollTop = top; // a refresh of the same diff keeps the reader's place
+}
+
+// Output with no hunk in it: its lines, numbered.
+function textLinesHtml(text) {
+  return text.replace(/\n$/, '').split('\n')
+    .map((line, i) => `<div class="dl"><span class="ln">${i + 1}</span><span class="code">${escapeHtml(line) || ' '}</span></div>`).join('');
 }
 
 function patchFilesHtml(files) {
@@ -1093,21 +1483,68 @@ function renderFormButtons(page, block) {
   });
 }
 
-// output: the page's last run — what ran, how it ended, what it printed.
-function outputHtml(page) {
+// output: the page's runs. One in flight shows its output as it comes; a
+// finished one what ran, how it ended and what it printed. Addresses are
+// links. The head's menu goes back to an earlier run (this tab keeps the last
+// 10); a new run brings it to the newest again.
+function initOutput(page, block, el) {
+  el.innerHTML = '<div class="blk-head"><span class="name">output</span><span class="cmd" data-cmd></span>'
+    + '<span class="meta" data-meta></span><select class="out-hist" data-hist title="recent runs" hidden></select></div>'
+    + '<div class="ext-empty" data-none>no run yet — press a toolbar button</div><pre class="ext-out" data-out hidden></pre>';
+  el.querySelector('[data-hist]').onchange = (e) => {
+    pageState.viewing[page.id] = e.target.value === '' ? null : Number(e.target.value);
+    renderOutputs(page);
+  };
+}
+
+function renderOutput(page, el) {
   const busy = [...pageState.running].filter(k => k.startsWith(`${page.id}.`));
-  const run = pageState.last[page.id];
-  if (busy.length) {
-    return `<div class="blk-head"><span class="name">output</span><span class="cmd">running ${busy.map(k => escapeHtml(k.slice(page.id.length + 1))).join(', ')}…</span></div>`
-      + `<pre class="ext-out muted">${run ? escapeHtml(stripAnsi(run.output)) : ''}</pre>`;
+  const hist = pageState.history[page.id] || [];
+  const viewing = pageState.viewing[page.id] ?? null;
+  const liveKey = viewing === null ? busy[busy.length - 1] : undefined; // the latest started
+  const run = liveKey ? null : hist[viewing ?? 0];
+  const cmd = el.querySelector('[data-cmd]'), meta = el.querySelector('[data-meta]'), pre = el.querySelector('[data-out]');
+  renderHistory(el, hist, viewing, busy.length > 0);
+  el.querySelector('[data-none]').hidden = !!(liveKey || run);
+  pre.hidden = !(liveKey || run);
+  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; return; }
+  // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
+  const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
+  const prev = el.dataset.shown || '';
+  const same = prev === id || (!liveKey && prev === `live:${page.id}.${run.item}`);
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+  let text;
+  if (liveKey) {
+    cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
+    cmd.title = '';
+    meta.textContent = '';
+    text = pageState.live[liveKey] || '';
+  } else {
+    const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+    const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+    cmd.textContent = `$ ${run.command}`;
+    cmd.title = run.command;
+    meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
+    text = run.output;
   }
-  if (!run) return '<div class="blk-head"><span class="name">output</span></div><div class="ext-empty">no run yet — press a toolbar button</div>';
-  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
-  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
-  const when = new Date(run.at).toLocaleTimeString();
-  return `<div class="blk-head"><span class="name">output</span><span class="cmd" title="${escapeHtml(run.command)}">$ ${escapeHtml(run.command)}</span>`
-    + `<span class="meta">${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${when}${then}</span></div>`
-    + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
+  const body = stripAnsi(text);
+  pre.innerHTML = body ? linkify(body) : `<span class="muted">${liveKey ? 'no output yet' : '(no output)'}</span>`;
+  el.dataset.shown = id;
+  if (!same) pre.scrollTop = liveKey ? pre.scrollHeight : 0;
+  else if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+// The menu of recent runs, rebuilt only when they change — not for every
+// piece of live output, which would close it under the pointer.
+function renderHistory(el, hist, viewing, live) {
+  const sel = el.querySelector('[data-hist]');
+  const sig = `${hist.map(r => `${r.item}@${r.at}`).join('|')}#${viewing}#${live}`;
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.hidden = !(hist.length > 1 || (hist.length && live));
+  sel.innerHTML = `<option value="">${live ? 'running now' : 'latest'}</option>` + hist.map((r, i) =>
+    `<option value="${i}">${escapeHtml(`${new Date(r.at).toLocaleTimeString()} · ${r.item} ${r.ok ? '✓' : '✗'}`)}</option>`).join('');
+  sel.value = viewing === null ? '' : String(viewing);
 }
 
 // ---- dialogs -----------------------------------------------------------------

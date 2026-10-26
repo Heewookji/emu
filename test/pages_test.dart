@@ -152,6 +152,99 @@ void main() {
       expect(page.toJson()['selection'], 'items');
     });
 
+    test('a text column may take a width and cut its start; chips and counts take neither', () {
+      final c = parse([
+        {
+          'list': {
+            'id': 'items',
+            'run': ['./tool/t', 'list'],
+            'columns': ['path:text:40em:start', 'title:text:18ch', 'file:start', 'note:320px', 'name', 'on:chip'],
+          },
+        },
+        {'list': {'id': 'chip', 'run': ['./tool/t'], 'columns': ['on:chip:10em']}},
+        {'list': {'id': 'unit', 'run': ['./tool/t'], 'columns': ['path:text:40']}},
+        {'list': {'id': 'twice', 'run': ['./tool/t'], 'columns': ['path:start:start']}},
+      ]);
+      final list = c.page('p')!.block('items') as ListBlock;
+      expect([for (final col in list.columns) col.toJson()], [
+        {'key': 'path', 'format': 'text', 'width': '40em', 'clip': 'start'},
+        {'key': 'title', 'format': 'text', 'width': '18ch'},
+        {'key': 'file', 'format': 'text', 'clip': 'start'},
+        {'key': 'note', 'format': 'text', 'width': '320px'},
+        {'key': 'name', 'format': 'text'},
+        {'key': 'on', 'format': 'chip'},
+      ]);
+      expect(c.problems, [
+        for (final (id, spec) in [('chip', 'on:chip:10em'), ('unit', 'path:text:40'), ('twice', 'path:start:start')])
+          startsWith('p.$id.columns: "$spec" should be name or name:text|chip|count'),
+      ]);
+    });
+
+    test('sort: a list starts in the order of a column, ascending unless :desc', () {
+      final c = parse([
+        {'list': {'id': 'items', 'run': ['./tool/t'], 'sort': 'minVer:desc'}},
+        {'list': {'id': 'asc', 'run': ['./tool/t'], 'sort': 'name'}},
+        {'list': {'id': 'bad', 'run': ['./tool/t'], 'sort': 'name:down'}},
+        {'list': {'id': 'list', 'run': ['./tool/t'], 'sort': ['name']}},
+      ]);
+      final page = c.page('p')!;
+      expect((page.block('items') as ListBlock).toJson()['sort'], {'key': 'minVer', 'dir': 'desc'});
+      expect((page.block('asc') as ListBlock).toJson()['sort'], {'key': 'name', 'dir': 'asc'});
+      expect(c.problems, [
+        'p.bad.sort: expected <col> or <col>:asc|desc (got "name:down")',
+        'p.list.sort: expected <col> or <col>:asc|desc (got "[name]")',
+      ]);
+    });
+
+    test('tree: one column, several, or a map with how many levels start open', () {
+      final c = parse([
+        {'list': {'id': 'one', 'run': ['./tool/t'], 'tree': 'path'}},
+        {'list': {'id': 'two', 'run': ['./tool/t'], 'tree': ['env', 'path']}},
+        {'list': {'id': 'map', 'run': ['./tool/t'], 'tree': {'columns': ['env', 'path'], 'open': 1}}},
+        {'list': {'id': 'empty', 'run': ['./tool/t'], 'tree': <String>[]}},
+        {'list': {'id': 'depth', 'run': ['./tool/t'], 'tree': {'columns': 'path', 'open': -1}}},
+        {'list': {'id': 'extra', 'run': ['./tool/t'], 'tree': {'columns': 'path', 'closed': true}}},
+      ]);
+      final page = c.page('p')!;
+      expect((page.block('one') as ListBlock).toJson()['tree'], {'columns': ['path'], 'open': 0});
+      expect((page.block('two') as ListBlock).toJson()['tree'], {'columns': ['env', 'path'], 'open': 0});
+      expect((page.block('map') as ListBlock).toJson()['tree'], {'columns': ['env', 'path'], 'open': 1});
+      expect(c.problems, [
+        for (final id in ['empty', 'depth', 'extra'])
+          'p.$id.tree: expected a column, a list of columns, or {columns: [env, path], open: <depth>}',
+      ]);
+    });
+
+    test('segments as a map: optional, and the one to hide for the picked row', () {
+      final c = parse([
+        {'list': {'id': 'files', 'run': ['./tool/t']}},
+        {
+          'diff': {
+            'id': 'content',
+            'run': ['./tool/t', 'diff', '{{selected.path}}', '--against', '{{seg}}'],
+            'segments': {'values': ['prod', 'stage'], 'optional': true, 'hide': '{{selected.env}}'},
+          },
+        },
+        {'diff': {'id': 'plain', 'run': ['./tool/t', '{{seg}}'], 'segments': {'values': ['a']}}},
+        {'diff': {'id': 'empty', 'run': ['./tool/t'], 'segments': {'values': <String>[]}}},
+        {'diff': {'id': 'extra', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'default': 'a'}}},
+        {'diff': {'id': 'flag', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'optional': 'yes'}}},
+        {'diff': {'id': 'row', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'hide': '{{row.env}}'}}},
+      ]);
+      final page = c.page('p')!;
+      final json = (page.block('content') as DiffBlock).toJson();
+      expect(json['segments'], ['prod', 'stage']);
+      expect(json['segmentsOptional'], isTrue);
+      expect(json['segmentsHide'], '{{selected.env}}');
+      expect(json['uses'], containsAll(['selected.path', 'seg', 'selected.env'])); // the pick decides what shows
+      expect((page.block('plain') as DiffBlock).toJson().keys, isNot(contains('segmentsOptional')));
+      expect(c.problems, [
+        for (final id in ['empty', 'extra', 'flag'])
+          'p.$id.segments: expected a list of names, or {values: [a, b], optional: true, hide: "{{selected.<col>}}"}',
+        "p.row.segments.hide: {{row.*}} only works in a list's rowActions",
+      ]);
+    });
+
     test('fill puts each value inside its own argument', () {
       const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
       final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});
@@ -427,6 +520,58 @@ void main() {
       expect(c.watching('base/x'), {'p': ['changes']});
       expect(c.watching('lib/main.dart'), isEmpty);
     });
+  });
+
+  test('auto: a toolbar action may run on file changes; one that needs a person or values may not', () {
+    final c = parsePages([
+      {
+        'id': 'p',
+        'toolbar': [
+          {
+            'action': {
+              'id': 'sync',
+              'run': ['./tool/t', 'sync'],
+              'then': 'reload',
+              'auto': {'watch': ['tpl/**'], 'debounce': 250, 'on': true},
+            },
+          },
+          {'action': {'id': 'plain', 'run': ['./tool/t'], 'auto': {'watch': 'tpl/*.txt'}}},
+          {'action': {'id': 'ask', 'run': ['./tool/t'], 'confirm': true, 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'pick', 'run': ['./tool/t', '{{selected.name}}'], 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'link', 'openUrl': 'myapp://home', 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'nowatch', 'run': ['./tool/t'], 'auto': {'debounce': 100}}},
+          {'action': {'id': 'soon', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**'], 'debounce': 'soon'}}},
+          {'action': {'id': 'out', 'run': ['./tool/t'], 'auto': {'watch': ['../x/**']}}},
+          {'action': {'id': 'extra', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**'], 'every': 5}}},
+        ],
+        'blocks': [
+          {
+            'list': {
+              'id': 'items',
+              'run': ['./tool/t'],
+              'rowActions': [
+                {'action': {'id': 'row', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**']}}},
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    final page = c.page('p')!;
+    expect((page.item('sync') as PageAction).toJson()['auto'], {'watch': ['tpl/**'], 'debounce': 250, 'on': true});
+    expect((page.item('plain') as PageAction).auto!.toJson(), {'watch': ['tpl/*.txt'], 'debounce': 400, 'on': false});
+    expect((page.item('plain') as PageAction).auto!.matches('tpl/home.txt'), isTrue);
+    expect(page.toolbar.map((i) => i.id), ['sync', 'plain']);
+    expect(c.problems, [
+      "p.ask.auto: an action that asks first (confirm) can't run on its own",
+      'p.pick.auto: an action that runs on its own has no pick, row or input to fill {{selected.name}} with',
+      'p.link.auto: works with run:, not openUrl',
+      'p.nowatch.auto.watch: say which project files start it, like "templates/**"',
+      'p.soon.auto.debounce: expected milliseconds (got "soon")',
+      'p.out.auto.watch: expected project-relative globs like "templates/**"',
+      'p.extra.auto: expected {watch: ["templates/**"], debounce: <ms>, on: true|false}',
+      'p.items.row.auto: only toolbar actions run on their own',
+    ]);
   });
 
   test('shellQuote quotes only what sh would split or expand', () {
