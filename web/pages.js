@@ -109,7 +109,7 @@ function showPage(id) {
   pageEls.debugToolbar.hidden = !debug;
   pageEls.bar.hidden = debug;
   pageEls.body.hidden = debug;
-  if (debug) { showTab(debugTab); return; }
+  if (debug) { pruneFrameRefreshed(null); showTab(debugTab); return; }
   for (const id of ['log', 'changes', 'mocks']) document.getElementById(id).hidden = true;
   renderPageBar(page);
   renderPageBody(page);
@@ -479,6 +479,7 @@ function onPageWatch(msg) {
 // ---- blocks ------------------------------------------------------------------
 
 function renderPageBody(page) {
+  pruneFrameRefreshed(page);
   const areas = { left: [], main: [], bottom: [] };
   for (const b of page.blocks) areas[b.area]?.push(b);
   const body = pageEls.body;
@@ -1370,6 +1371,7 @@ function frameSelect(page, key) {
 // none is named. Not while it loads, nor twice in a second (a view that
 // refreshes from onData would otherwise run its command in a loop).
 const frameRefreshed = {}; // 'page.block' → when a frame last had it fetched
+const FRAME_REFRESH_MS = 1000;
 function frameRefresh(page, block, id) {
   const target = id === undefined || id === null ? block : page.blocks.find(b => b.id === id);
   if (!target || target.kind === 'output' || target.kind === 'form') {
@@ -1377,12 +1379,22 @@ function frameRefresh(page, block, id) {
   }
   const key = blockKey(page, target);
   const now = Date.now();
-  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < 1000) {
+  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < FRAME_REFRESH_MS) {
     return { ok: false, busy: true, error: `${target.title || target.id} is already loading` };
   }
   frameRefreshed[key] = now;
   loadBlocks(page, [target]);
   return { ok: true };
+}
+
+// When [page] is drawn (shown, or drawn again): forget the refreshes of
+// blocks not on it, or no longer on it, and those too old to hold one back.
+function pruneFrameRefreshed(page) {
+  const now = Date.now();
+  const keep = new Set(page ? page.blocks.map(b => blockKey(page, b)) : []);
+  for (const [key, at] of Object.entries(frameRefreshed)) {
+    if (!keep.has(key) || now - at >= FRAME_REFRESH_MS) delete frameRefreshed[key];
+  }
 }
 
 // emu.run(id, {input, confirm}): the block's own action, or a toolbar action

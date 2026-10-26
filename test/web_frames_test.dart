@@ -126,7 +126,10 @@ const answer = (body) => onMessage({ source: parent, data: { type: 'emu:result',
   });
 
   group("the dashboard's reading of a frame's request", skip: _node ? false : 'node is not installed', () {
-    final prelude = [for (final f in ['clip', 'frameAsk', 'frameOptions', 'withAsk']) _fn(src, f)].join('\n');
+    final prelude = [
+      'const frameRefreshed = {}; const FRAME_REFRESH_MS = 1000; const blockKey = (page, block) => `\${page.id}.\${block.id}`;',
+      for (final f in ['clip', 'frameAsk', 'frameOptions', 'withAsk', 'pruneFrameRefreshed']) _fn(src, f),
+    ].join('\n');
 
     test('choose options: values once, strings/numbers/booleans only, labels as text', () async {
       final r = await _js(prelude, '''
@@ -178,6 +181,21 @@ const answer = (body) => onMessage({ source: parent, data: { type: 'emu:result',
           true, // a view can't make a danger run look safe
         ],
         'bare': ['', 'from emu.yaml'],
+      });
+    });
+
+    test("refreshes are forgotten when a page is drawn: other pages', gone blocks', old ones", () async {
+      final r = await _js(prelude, '''
+        const now = Date.now();
+        Object.assign(frameRefreshed, { 'a.view': now, 'a.gone': now, 'a.list': now - 5000, 'b.view': now });
+        pruneFrameRefreshed({ id: 'a', blocks: [{ id: 'view' }, { id: 'list' }] });
+        const kept = Object.keys(frameRefreshed);
+        pruneFrameRefreshed(null); // the Debug tab
+        return { kept, debug: Object.keys(frameRefreshed) };
+      ''');
+      expect(r, {
+        'kept': ['a.view'],
+        'debug': <Object?>[],
       });
     });
   });
