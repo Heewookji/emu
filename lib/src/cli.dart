@@ -2169,10 +2169,14 @@ Future<int> _pagesCmd(List<String> args) async {
     print('${page['id']}  ${page['title']}');
     for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
       final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
+      final auto = i['auto'] as Map?;
+      // The switch as the session has it; without one, where it starts.
+      final autoOn = (data['auto'] as Map?)?['${page['id']}.${i['id']}'] ?? auto?['on'];
       final notes = [
         if (i['then'] != 'none') 'then ${i['then']}',
         if (i['confirm'] == true) 'asks first',
         if (i['needsChecked'] != null) 'needs a checked row in ${i['needsChecked']}',
+        if (auto != null) 'runs on change of ${(auto['watch'] as List).join(', ')}: ${autoOn == true ? 'on' : 'off'}',
       ];
       print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }

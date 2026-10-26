@@ -260,6 +260,7 @@ class EmuServer {
       openUrl: (url) async => (await _openDeepLink(url)).$2,
       broadcast: _broadcast,
       log: (text, level) => logStore.add(text, level: level, source: 'ext'),
+      autoStateFile: File('${session.stateDir.path}/pages_auto.json'),
     );
     for (final problem in pages.load().problems) {
       logStore.add('emu.yaml pages: $problem', level: LogLevel.warn, source: 'system');
@@ -1146,22 +1147,24 @@ class EmuServer {
     }
   }
 
-  /// A page block may watch any project path — `build/` or a git-ignored work
-  /// folder included — but not emu's or git's own churn. Checked in batches:
-  /// a save or a formatter run is a burst of events.
+  /// A page block or an `auto:` action may watch any project path — `build/`
+  /// or a git-ignored work folder included — but not emu's or git's own
+  /// churn. Checked in batches: a save or a formatter run is a burst of events.
   void _queuePageWatch(String rel) {
     if (rel.isEmpty || rel.split(RegExp(r'[/\\]')).any(const {'.git', '.dart_tool', '.emu'}.contains)) return;
     _pageWatchPaths.add(rel.replaceAll(r'\', '/'));
     _pageWatchDebounce?.cancel();
     _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
-      final hits = pages.watching(_pageWatchPaths);
+      final paths = _pageWatchPaths.toList();
       _pageWatchPaths.clear();
+      final hits = pages.watching(paths);
       if (hits.isNotEmpty) {
         _broadcast({
           'type': 'ext-watch',
           'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
         });
       }
+      pages.filesChanged(paths);
     });
   }
 
@@ -1474,6 +1477,7 @@ class EmuServer {
     _fileWatchDebounce?.cancel();
     _pagesChangedDebounce?.cancel();
     _pageWatchDebounce?.cancel();
+    pages.dispose();
     await _fileWatch?.cancel();
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();

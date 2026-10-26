@@ -231,6 +231,7 @@ class PageAction extends ToolbarItem {
     this.confirm,
     this.needsChecked,
     this.bulk = false,
+    this.auto,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -248,6 +249,10 @@ class PageAction extends ToolbarItem {
   /// A row button that also runs once per checked row, from the list's head
   /// (`bulk: true`). The dashboard does the rounds; each is a plain row run.
   final bool bulk;
+
+  /// `auto:` — the server also runs it when a file it watches changes, while
+  /// it is switched on. Toolbar actions only, with nothing to fill or ask.
+  final AutoRun? auto;
 
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
@@ -268,7 +273,25 @@ class PageAction extends ToolbarItem {
         'preview': ?confirm?.preview?.display,
         'needsChecked': ?needsChecked,
         if (bulk) 'bulk': true,
+        'auto': ?auto?.toJson(),
       };
+}
+
+const defaultAutoDebounce = Duration(milliseconds: 400);
+
+/// When an action runs on its own (`auto:`): a change to a project file that
+/// matches [watch], once the changes have rested for [debounce]. [on] is
+/// where the dashboard's switch starts; the server keeps it per project.
+class AutoRun {
+  const AutoRun({required this.watch, this.debounce = defaultAutoDebounce, this.on = false});
+
+  final List<String> watch;
+  final Duration debounce;
+  final bool on;
+
+  bool matches(String relPath) => watch.any((g) => globToRegExp(g).hasMatch(relPath));
+
+  Map<String, dynamic> toJson() => {'watch': watch, 'debounce': debounce.inMilliseconds, 'on': on};
 }
 
 /// A switch: [state] prints `{"on": bool, "detail"?: string}`; flipping it
@@ -856,7 +879,7 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   final id = claim(m['id'], at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems);
+  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems, toolbar: true);
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
@@ -868,12 +891,32 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   return PageToggle(id: id, label: label, state: state, on: on, off: off, then: then, timeout: timeout);
 }
 
-PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems, {bool bulk = false}) {
+PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems,
+    {bool bulk = false, bool toolbar = false}) {
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
   final (confirm, confirmOk) = _confirm(m['confirm'], '$where.confirm', allowed, problems);
   if (!confirmOk) return null;
+  AutoRun? auto;
+  if (m['auto'] != null) {
+    // It runs with no one there: nothing to fill in, nothing to ask.
+    final String? why = !toolbar
+        ? 'only toolbar actions run on their own'
+        : m['openUrl'] != null
+            ? 'works with run:, not openUrl'
+            : confirm != null
+                ? 'an action that asks first (confirm) can\'t run on its own'
+                : m['needs'] != null
+                    ? 'an action that runs on its own has no checked rows — drop needs'
+                    : null;
+    if (why != null) {
+      problems.add('$where.auto: $why');
+      return null;
+    }
+    auto = _parseAuto(m['auto'], '$where.auto', problems);
+    if (auto == null) return null;
+  }
   String? needsChecked;
   if (m['needs'] != null) {
     final needs = '${m['needs']}';
@@ -907,8 +950,46 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
   }
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
+  if (auto != null && run.placeholders.isNotEmpty) {
+    problems.add('$where.auto: an action that runs on its own has no pick, row or input to fill '
+        '${run.placeholders.map((k) => '{{$k}}').join(', ')} with');
+    return null;
+  }
   return PageAction(
-      id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm, needsChecked: needsChecked, bulk: bulk);
+      id: id,
+      label: label,
+      run: run,
+      then: then,
+      timeout: timeout,
+      confirm: confirm,
+      needsChecked: needsChecked,
+      bulk: bulk,
+      auto: auto);
+}
+
+/// `auto: {watch: [globs], debounce: <ms>, on: true|false}`.
+AutoRun? _parseAuto(Object? v, String at, List<String> problems) {
+  if (v is! Map || v.keys.any((k) => !const {'watch', 'debounce', 'on'}.contains(k))) {
+    problems.add('$at: expected {watch: ["templates/**"], debounce: <ms>, on: true|false}');
+    return null;
+  }
+  final watch = _watch(v['watch'], '$at.watch', problems);
+  if (watch == null) return null;
+  if (watch.isEmpty) {
+    problems.add('$at.watch: say which project files start it, like "templates/**"');
+    return null;
+  }
+  final debounce = v['debounce'] ?? defaultAutoDebounce.inMilliseconds;
+  if (debounce is! int || debounce < 0) {
+    problems.add('$at.debounce: expected milliseconds (got "$debounce")');
+    return null;
+  }
+  final on = v['on'] ?? false;
+  if (on is! bool) {
+    problems.add('$at.on: expected true or false');
+    return null;
+  }
+  return AutoRun(watch: watch, debounce: Duration(milliseconds: debounce), on: on);
 }
 
 const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowOnPreviewError'};

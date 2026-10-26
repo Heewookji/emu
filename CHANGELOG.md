@@ -58,6 +58,11 @@
   `{type: 'ext', event: 'output', page, item, chunk}` 로 보내고, 끝나면 지금처럼 전체 결과로 바꾼다. output 과 Logs 의
   `http(s)://` 주소는 새 탭 링크. output 머리 메뉴로 최근 10개 실행(이 탭에만)을 다시 보고, 새 실행이 시작되면 그
   실행으로 돌아온다.
+- 대시보드 페이지 툴바 액션의 `auto: {watch, debounce, on}`(#60) — 감시하는 프로젝트 파일이 바뀌면 debounce 뒤 서버가
+  액션을 실행한다(`then:` 포함, 대시보드를 닫아도). 버튼 옆 ⚡ 로 켜고 끄며 스위치는 `.emu/pages_auto.json` 에 프로젝트별로
+  기억(`POST /api/pages/<page>/auto/<item>`, `ext-auto` 알림). 실행 중 바뀐 파일은 끝난 뒤 한 번만 더 돌리고 그 한 번 더의
+  변경은 세지 않는다(파일 수정 시각으로 판단) — 감시하는 파일을 쓰는 도구도 반복하지 않는다. 자리표시자·`confirm`·
+  `needs`·`openUrl` 액션과 툴바 밖 액션에 주면 설정 오류. 실패하면 토스트, Logs 에 `(auto: … changed)`.
 
 ## [0.14.0] - 2026-10-23
 

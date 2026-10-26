@@ -202,6 +202,7 @@ function connect() {
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
     else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
+    else if (msg.type === 'ext-auto') onPageAuto(msg);   // an `auto:` action switched on or off
     else if (msg.type === 'mock') loadMocks();       // scenario switched or saved (here, another tab or the CLI)
     else if (msg.type === 'mock-hit') onMockHit(msg.hit); // the app made a request through emu
   };

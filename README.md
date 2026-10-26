@@ -884,6 +884,7 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
+| `auto` | Toolbar actions: also run on their own when project files change — `{watch: ["tpl/**"], debounce: 400, on: false}` (below) |
 | `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. An area's × hides it and the others take its room (`+ left` in the page bar brings it back, `open all` every one); a hidden area's blocks are fetched when it opens, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
@@ -984,6 +985,26 @@ pages:
   open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
   each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
   the rows flat, the path columns first.
+- **Run on save.** An action with `auto:` also runs when a project file it watches changes — save
+  a template and it syncs and reloads with no click:
+
+  ```yaml
+  - action:
+      id: sync
+      run: [./tool/tpl.sh, sync]
+      then: reload
+      auto:
+        watch: ["tpl/**/*.txt"]   # project-relative globs
+        debounce: 400             # ms the changes must rest: a burst of saves runs it once
+  ```
+
+  ⚡ beside the button switches it on and off (`on: true` starts it on). The server keeps the switch
+  per project (`.emu/pages_auto.json`) and does the watching, so it works with no dashboard open. A
+  file that changes while it runs makes it run once more right after; what changes during that once
+  more doesn't count — a tool that writes the files it watches runs twice, not forever. A run shows in
+  the output block and the Logs tab like a press (`[ext] … (auto: tpl/a.txt changed)`); a failed one
+  also shows a toast. `auto:` takes toolbar actions with nothing to fill in or confirm: no
+  placeholders, `confirm`, `needs` or `openUrl`. `emu pages` shows the switch.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row, the segment and a clicked sort
   are remembered per browser.
@@ -1231,6 +1252,7 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | `server.log` | Server startup diagnostics |
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
+| `pages_auto.json` | Dashboard pages' `auto:` switches, as flipped |
 
 ## Device ownership
 

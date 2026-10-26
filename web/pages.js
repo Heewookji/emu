@@ -32,6 +32,7 @@ const pageState = {
   live: {},              // 'page.item' → the output of a run in flight, as it comes
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
+  auto: {},              // 'page.item' → whether an `auto:` action runs on file changes (the server keeps it)
   selected: {},          // page id → key value of the picked row
   checked: {},           // 'page.block' → key values of the checked rows (check: true)
   bulk: {},              // 'page.block.action' → progress of a bulk run, "2/5"
@@ -79,6 +80,7 @@ async function loadPages() {
     pageState.pages = j.pages || [];
     pageState.problems = j.problems || [];
     for (const [id, run] of Object.entries(j.last || {})) remember(id, run);
+    pageState.auto = j.auto || {};
   } catch (_) { return; }
   if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
   renderPageTabs();
@@ -289,7 +291,8 @@ function renderPageBar(page) {
     }
     const title = blocked ? (usesSelection(item) && !hasSelection ? 'select a row first' : `check a row in ${item.needsChecked} first`) : item.command;
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
-      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
+      + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`
+      + (item.auto ? autoSwitchHtml(page, item) : '');
   }).join('') + '<span class="grow"></span>' + reopenHtml(page) + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
@@ -305,6 +308,42 @@ function renderPageBar(page) {
   });
   document.getElementById('pages-refresh').onclick = loadPages;
   pageEls.bar.querySelectorAll('[data-open-area]').forEach(b => { b.onclick = () => openArea(page, b.dataset.openArea); });
+  pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
+}
+
+// ---- auto: -------------------------------------------------------------------
+// ⚡ beside an `auto:` action: whether the server runs it when the files it
+// watches change. The server keeps the switch (per project) and runs it with
+// no dashboard open; a failed run says so here.
+
+function autoSwitchHtml(page, item) {
+  const on = !!pageState.auto[itemKey(page, item)];
+  const title = `${on ? 'Runs' : 'Off — click to run'} on its own when these change: ${item.auto.watch.join(', ')}`;
+  return `<button class="ext-auto${on ? ' on' : ''}" data-auto="${escapeHtml(item.id)}" aria-pressed="${on}"`
+    + ` title="${escapeHtml(title)}">⚡</button>`;
+}
+
+async function switchAuto(page, id) {
+  const key = `${page.id}.${id}`;
+  try {
+    const r = await api(`/api/pages/${encodeURIComponent(page.id)}/auto/${encodeURIComponent(id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !pageState.auto[key] }),
+    });
+    const j = await r.json();
+    if (!j.ok) { toast(`auto ${id}: ${j.error || 'failed'}`); return; }
+    pageState.auto[key] = j.on;
+  } catch (e) {
+    toast(`auto ${id} failed: ${e}`);
+    return;
+  }
+  if (currentPage() === page) renderPageBar(page);
+}
+
+// Switched here, in another tab or by the CLI.
+function onPageAuto(msg) {
+  pageState.auto[`${msg.page}.${msg.item}`] = !!msg.on;
+  const page = currentPage();
+  if (page?.id === msg.page) renderPageBar(page);
 }
 
 async function refreshToggles(page) {
@@ -406,6 +445,7 @@ function onPageRun(msg) {
     delete pageState.live[key];
     remember(page.id, msg.run);
     if (msg.run?.state) pageState.toggles[key] = msg.run.state;
+    if (msg.auto && !msg.run?.ok) toast(`⚡ ${msg.item} (on change): ${msg.run?.error || 'failed'}`);
   }
   if (currentPage() !== page) return;
   renderRunning(page);

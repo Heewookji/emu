@@ -249,6 +249,9 @@ button.busy { opacity: .6; cursor: progress; }
 .ext-state { font-weight: 700; font-size: 11px; color: var(--muted); }
 .ext-toggle.on .ext-state { color: var(--system); }
 .ext-detail { color: var(--muted); font-size: 11px; }
+/* ⚡ beside an `auto:` action: lit while it runs on file changes. */
+.ext-auto { padding: 4px 6px; margin-left: -5px; font-size: 11px; filter: grayscale(1); opacity: .55; }
+.ext-auto.on { filter: none; opacity: 1; border-color: #9e6a0099; background: #9e6a001f; }
 
 .ext-page {
   flex: 1; min-width: 0; min-height: 0; display: grid;

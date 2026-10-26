@@ -522,6 +522,58 @@ void main() {
     });
   });
 
+  test('auto: a toolbar action may run on file changes; one that needs a person or values may not', () {
+    final c = parsePages([
+      {
+        'id': 'p',
+        'toolbar': [
+          {
+            'action': {
+              'id': 'sync',
+              'run': ['./tool/t', 'sync'],
+              'then': 'reload',
+              'auto': {'watch': ['tpl/**'], 'debounce': 250, 'on': true},
+            },
+          },
+          {'action': {'id': 'plain', 'run': ['./tool/t'], 'auto': {'watch': 'tpl/*.txt'}}},
+          {'action': {'id': 'ask', 'run': ['./tool/t'], 'confirm': true, 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'pick', 'run': ['./tool/t', '{{selected.name}}'], 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'link', 'openUrl': 'myapp://home', 'auto': {'watch': ['tpl/**']}}},
+          {'action': {'id': 'nowatch', 'run': ['./tool/t'], 'auto': {'debounce': 100}}},
+          {'action': {'id': 'soon', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**'], 'debounce': 'soon'}}},
+          {'action': {'id': 'out', 'run': ['./tool/t'], 'auto': {'watch': ['../x/**']}}},
+          {'action': {'id': 'extra', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**'], 'every': 5}}},
+        ],
+        'blocks': [
+          {
+            'list': {
+              'id': 'items',
+              'run': ['./tool/t'],
+              'rowActions': [
+                {'action': {'id': 'row', 'run': ['./tool/t'], 'auto': {'watch': ['tpl/**']}}},
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+    final page = c.page('p')!;
+    expect((page.item('sync') as PageAction).toJson()['auto'], {'watch': ['tpl/**'], 'debounce': 250, 'on': true});
+    expect((page.item('plain') as PageAction).auto!.toJson(), {'watch': ['tpl/*.txt'], 'debounce': 400, 'on': false});
+    expect((page.item('plain') as PageAction).auto!.matches('tpl/home.txt'), isTrue);
+    expect(page.toolbar.map((i) => i.id), ['sync', 'plain']);
+    expect(c.problems, [
+      "p.ask.auto: an action that asks first (confirm) can't run on its own",
+      'p.pick.auto: an action that runs on its own has no pick, row or input to fill {{selected.name}} with',
+      'p.link.auto: works with run:, not openUrl',
+      'p.nowatch.auto.watch: say which project files start it, like "templates/**"',
+      'p.soon.auto.debounce: expected milliseconds (got "soon")',
+      'p.out.auto.watch: expected project-relative globs like "templates/**"',
+      'p.extra.auto: expected {watch: ["templates/**"], debounce: <ms>, on: true|false}',
+      'p.items.row.auto: only toolbar actions run on their own',
+    ]);
+  });
+
   test('shellQuote quotes only what sh would split or expand', () {
     expect(shellQuote('./tool/x'), './tool/x');
     expect(shellQuote('--target=../cdn'), '--target=../cdn');

@@ -139,6 +139,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm:` 항목은 확인 창 내용
   (제목·설명·preview·명령)을 찍고 터미널이면 y/N 을 묻는다 — 에이전트처럼 터미널이 아니면 `--yes` 가 있어야
   실행된다(`--yes` 없이 `--json` 이면 preview 결과만 받아 볼 수 있다). `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
+  `auto:` 가 켜진 액션은 감시 파일이 바뀌면 서버가 스스로 실행한다(`emu pages` 에 `runs on change of …: on`) —
+  그 파일을 고친 뒤 같은 액션을 또 `emu run` 할 필요가 없다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
   form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움). `--checked <key>,…` 는 `check: true` list 의
   체크한 행(`{{checked.<col>...}}`·`{{checked.count}}`, list 가 여럿이면 `--checked <list>=<key>,…`).

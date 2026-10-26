@@ -42,6 +42,10 @@ pages:
       - action: { id: slow, run: [sleep, 5], timeout: 1 }
       - action: { id: missing, run: [./tool/nope.sh] }
       - action: { id: steps, run: [./tool/t.sh, steps], timeout: 20 }
+      - action: { id: sync, run: [./tool/t.sh, log, sync], then: reload, auto: { watch: ["tpl/*.txt"], debounce: 30, on: true } }
+      - action: { id: watcher, run: [./tool/t.sh, log, watcher], auto: { watch: ["tpl/*.txt"] } }
+      - action: { id: self, run: [./tool/t.sh, self], timeout: 20, auto: { watch: ["own/**"], debounce: 30, on: true } }
+      - action: { id: late, run: [./tool/t.sh, late], auto: { watch: ["late/**"], debounce: 30, on: true } }
     blocks:
       - output: {}
 ''';
@@ -55,6 +59,9 @@ case "$1" in
   patch) printf -- '--- a/t.json\n+++ b/t.json\n@@ -1 +1 @@\n-old\n+new\n' ;;
   rows) echo '[{"name": "home", "changes": 2}, {"name": "<b>x</b>", "changes": 0}]' ;;
   steps) echo one; while [ ! -f go ]; do sleep 0.05; done; echo two ;;
+  log) echo "$2" >> runs.log ;;
+  self) mkdir -p own; touch own/x.txt; echo touched; while [ ! -f go ]; do sleep 0.05; done; echo self >> runs.log ;;
+  late) mkdir -p late; touch late/x.txt; echo late >> runs.log ;;
 esac
 ''';
 
@@ -93,9 +100,14 @@ void main() {
         onBroadcast?.call(m);
       },
       log: (text, level) => logs.add((text, level)),
+      autoStateFile: File('${root.path}/.emu/pages_auto.json'),
     );
+    Directory('${root.path}/.emu').createSync();
   });
-  tearDown(() => root.deleteSync(recursive: true));
+  tearDown(() {
+    api.dispose();
+    root.deleteSync(recursive: true);
+  });
 
   Future<(int, Map<String, dynamic>)> call(String method, String path, [Map<String, dynamic>? body]) async {
     final res = await api.handle(
@@ -113,7 +125,8 @@ void main() {
     final page = (j['pages'] as List).single as Map;
     expect(page['id'], 'tools');
     expect([for (final i in page['toolbar'] as List) i['id']],
-        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing', 'steps']);
+        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing', 'steps',
+         'sync', 'watcher', 'self', 'late']);
     expect((page['toolbar'] as List)[1]['command'], "./tool/t.sh hello 'two words'");
   });
 
@@ -309,5 +322,109 @@ void main() {
     (_, j) = await call('GET', '/api/pages');
     expect([for (final p in j['pages'] as List) p['id']], ['other']);
     expect((j['problems'] as List).single, contains('other.x.run: missing'));
+  });
+
+  group('auto:', () {
+    List<String> runs() {
+      final f = File('${root.path}/runs.log');
+      return f.existsSync() ? f.readAsLinesSync() : [];
+    }
+
+    // Until [key] has no run waiting and none in flight (bounded, so a bug fails rather than hangs).
+    Future<void> settled(String key) async {
+      for (var i = 0; i < 400 && !api.autoIdle(key); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+      expect(api.autoIdle(key), isTrue, reason: '$key still busy');
+    }
+
+    test('a switch per action, kept per project and told to dashboards', () async {
+      var (_, j) = await call('GET', '/api/pages');
+      expect(j['auto'], {'tools.sync': true, 'tools.watcher': false, 'tools.self': true, 'tools.late': true});
+
+      (_, j) = await call('POST', '/api/pages/tools/auto/watcher', {'on': true});
+      expect(j, {'ok': true, 'on': true});
+      expect(broadcasts.last, {'type': 'ext-auto', 'page': 'tools', 'item': 'watcher', 'on': true});
+      expect(jsonDecode(File('${root.path}/.emu/pages_auto.json').readAsStringSync()), {'tools.watcher': true});
+
+      final again = PagesApi(
+        projectRoot: root.path,
+        home: root.path,
+        environment: () => {},
+        followUp: (_) async => {'ok': true},
+        openUrl: (_) async => {'ok': true},
+        broadcast: (_) {},
+        log: (_, _) {},
+        autoStateFile: File('${root.path}/.emu/pages_auto.json'),
+      );
+      final res = await again.handle(Request('GET', Uri.parse('http://127.0.0.1:4577/api/pages')), '/api/pages');
+      expect((jsonDecode(await res.readAsString()) as Map)['auto']['tools.watcher'], isTrue);
+
+      final (code, bad) = await call('POST', '/api/pages/tools/auto/hello', {'on': true});
+      expect(code, 404);
+      expect(bad['error'], 'no action with auto: "hello" on page tools');
+      expect((await call('POST', '/api/pages/tools/auto/watcher', {'on': 'yes'})).$1, 400);
+    });
+
+    test('a change to a watched file runs it once the changes rest, with its then:', () async {
+      final file = File('${root.path}/tpl/a.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('a');
+      api.filesChanged(['tpl/a.txt']);
+      api.filesChanged(['tpl/a.txt', 'lib/main.dart']); // one burst: one run
+      expect(api.autoIdle('tools.sync'), isFalse);
+      await settled('tools.sync');
+      expect(runs(), ['sync']); // not watcher: it is switched off
+      expect([for (final b in broadcasts) if (b['event'] == 'started') '${b['item']} ${b['auto']}'], ['sync true']);
+      expect(broadcasts.lastWhere((b) => b['event'] == 'finished')['auto'], isTrue);
+      expect(followUps, [Then.reload]);
+      expect(logs.map((l) => l.$1), contains("[ext] tools.sync ▸ ./tool/t.sh log sync   (auto: tpl/a.txt changed)"));
+
+      api.filesChanged(['lib/main.dart']); // not watched
+      api.filesChanged(['tpl/a.txt']); // reported again, but the run already read it
+      expect(api.autoIdle('tools.sync'), isTrue);
+
+      file.writeAsStringSync('b'); // a new edit
+      api.filesChanged(['tpl/a.txt']);
+      await settled('tools.sync');
+      expect(runs(), ['sync', 'sync']);
+
+      await call('POST', '/api/pages/tools/auto/sync', {'on': false});
+      file.writeAsStringSync('c');
+      api.filesChanged(['tpl/a.txt']);
+      expect(api.autoIdle('tools.sync'), isTrue);
+    });
+
+    test('a file changed while it runs makes it run once more — no more, though it writes what it watches', () async {
+      // The run writes own/x.txt and waits; the watcher reports that write while it runs.
+      onBroadcast = (m) {
+        if (m['event'] == 'output' && m['item'] == 'self' && '${m['chunk']}'.contains('touched')) {
+          api.filesChanged(['own/x.txt']);
+          File('${root.path}/go').createSync();
+        }
+      };
+      File('${root.path}/own/x.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('edit');
+      api.filesChanged(['own/x.txt']);
+      await settled('tools.self');
+      expect(runs(), ['self', 'self']);
+      api.filesChanged(['own/x.txt']); // the once-more's own write, reported late
+      expect(api.autoIdle('tools.self'), isTrue);
+    });
+
+    test('a change made during a run but reported after it also runs it once more', () async {
+      File('${root.path}/late/x.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('edit');
+      api.filesChanged(['late/x.txt']);
+      await settled('tools.late');
+      expect(runs(), ['late']);
+      api.filesChanged(['late/x.txt']); // its write, reported after it ended
+      await settled('tools.late');
+      expect(runs(), ['late', 'late']);
+      api.filesChanged(['late/x.txt']); // the once-more's write: not counted
+      expect(api.autoIdle('tools.late'), isTrue);
+    });
   });
 }
