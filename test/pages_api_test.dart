@@ -41,6 +41,7 @@ pages:
       - action: { id: softpreview, run: [./tool/t.sh, hello], confirm: { preview: [./tool/t.sh, fail], allowOnPreviewError: true } }
       - action: { id: slow, run: [sleep, 5], timeout: 1 }
       - action: { id: missing, run: [./tool/nope.sh] }
+      - action: { id: steps, run: [./tool/t.sh, steps], timeout: 20 }
     blocks:
       - output: {}
 ''';
@@ -53,12 +54,14 @@ case "$1" in
   fail) echo "line 1"; echo "line 2"; exit 3 ;;
   patch) printf -- '--- a/t.json\n+++ b/t.json\n@@ -1 +1 @@\n-old\n+new\n' ;;
   rows) echo '[{"name": "home", "changes": 2}, {"name": "<b>x</b>", "changes": 0}]' ;;
+  steps) echo one; while [ ! -f go ]; do sleep 0.05; done; echo two ;;
 esac
 ''';
 
 void main() {
   late Directory root;
   late List<Map<String, dynamic>> broadcasts;
+  void Function(Map<String, dynamic>)? onBroadcast;
   late List<(String, LogLevel)> logs;
   late List<Then> followUps;
   late bool followUpOk;
@@ -72,6 +75,7 @@ void main() {
       ..writeAsStringSync(_script);
     Process.runSync('chmod', ['+x', script.path]);
     broadcasts = [];
+    onBroadcast = null;
     logs = [];
     followUps = [];
     followUpOk = true;
@@ -84,7 +88,10 @@ void main() {
         return {'action': then.name, 'ok': followUpOk, 'message': followUpOk ? 'Reloaded 1 of 9 libraries' : 'app is not running'};
       },
       openUrl: (url) async => {'ok': true},
-      broadcast: broadcasts.add,
+      broadcast: (m) {
+        broadcasts.add(m);
+        onBroadcast?.call(m);
+      },
       log: (text, level) => logs.add((text, level)),
     );
   });
@@ -106,7 +113,7 @@ void main() {
     final page = (j['pages'] as List).single as Map;
     expect(page['id'], 'tools');
     expect([for (final i in page['toolbar'] as List) i['id']],
-        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing']);
+        ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing', 'steps']);
     expect((page['toolbar'] as List)[1]['command'], "./tool/t.sh hello 'two words'");
   });
 
@@ -116,10 +123,28 @@ void main() {
     expect(j['ok'], isTrue);
     expect(j['exitCode'], 0);
     expect(j['output'], allOf(contains('hello two words'), contains('warn')));
-    expect([for (final b in broadcasts) b['event']], ['started', 'finished']);
+    final events = [for (final b in broadcasts) b['event']];
+    expect(events.first, 'started');
+    expect(events.last, 'finished');
+    expect(events.sublist(1, events.length - 1), everyElement('output'));
+    expect([for (final b in broadcasts) if (b['event'] == 'output') b['chunk']].join(), j['output']);
     expect((broadcasts.last['run'] as Map)['output'], contains('hello two words'));
     expect(logs.first.$1, "[ext] tools.hello ▸ ./tool/t.sh hello 'two words'");
     expect(logs.last.$1, startsWith('[ext] tools.hello ✓ exit 0'));
+  });
+
+  test('a run sends its output to dashboards as it comes, all of it before finished', () async {
+    // The command waits for its first line to reach a dashboard: it ends only if output streams.
+    onBroadcast = (m) {
+      if (m['event'] == 'output' && '${m['chunk']}'.contains('one')) File('${root.path}/go').createSync();
+    };
+    final (_, j) = await run('steps');
+    expect(j['ok'], isTrue);
+    final chunks = [for (final b in broadcasts) if (b['event'] == 'output') '${b['chunk']}'];
+    expect(chunks.first, contains('one'));
+    expect(chunks.join(), 'one\ntwo\n');
+    expect(broadcasts.last['event'], 'finished');
+    expect(broadcasts.where((b) => b['event'] == 'output').every((b) => b['page'] == 'tools' && b['item'] == 'steps'), isTrue);
   });
 
   test('a string command runs with sh -c and sees the EMU_ variables', () async {

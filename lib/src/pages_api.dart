@@ -21,7 +21,9 @@
 ///
 /// The config is re-read on every request, so editing `emu.yaml` needs no
 /// restart. Every run is reported to dashboards over the WebSocket
-/// (`{"type": "ext", ...}`) and logged with an `[ext]` prefix.
+/// (`{"type": "ext", "event": …}`: `started`, its output as it comes —
+/// `output` with the new `chunk`, at most every 100ms — then `finished`) and
+/// logged with an `[ext]` prefix.
 library;
 
 import 'dart:async';
@@ -43,6 +45,9 @@ const _rowLimit = 2000;
 
 /// Largest html block file served.
 const _frameLimit = 2 * 1024 * 1024;
+
+/// How often a running command's new output goes to dashboards.
+const _outputEvery = Duration(milliseconds: 100);
 
 /// One finished run of a page command.
 class PageRun {
@@ -385,7 +390,12 @@ class PagesApi {
     try {
       broadcast({'type': 'ext', 'event': 'started', 'page': page.id, 'item': itemId});
       log('[ext] $key ▸ $display', LogLevel.system);
-      run = url != null ? await _openUrl(page.id, itemId, url) : await execute(page.id, itemId, command, item.timeout);
+      final live = _LiveOutput(
+          (chunk) => broadcast({'type': 'ext', 'event': 'output', 'page': page.id, 'item': itemId, 'chunk': chunk}));
+      run = url != null
+          ? await _openUrl(page.id, itemId, url)
+          : await execute(page.id, itemId, command, item.timeout, onOutput: live.add);
+      live.flush(); // all of it before `finished`
       if (run.commandOk && item.then != Then.none) run.then = await followUp(item.then);
       if (item is PageToggle) run.state = await _state(page, item, vars);
     } finally {
@@ -620,8 +630,9 @@ class PagesApi {
   }
 
   /// Run [command] in the project root, output captured, killed after
-  /// [timeout]. Never throws.
-  Future<PageRun> execute(String page, String item, PageCommand command, Duration timeout) async {
+  /// [timeout]. [onOutput] gets stdout and stderr as they come. Never throws.
+  Future<PageRun> execute(String page, String item, PageCommand command, Duration timeout,
+      {void Function(String chunk)? onOutput}) async {
     var (exe, args) = command.invocation;
     // A project script (`./tool/x`, `tool/x`) resolves against the project
     // root, not against wherever the server was started.
@@ -638,8 +649,14 @@ class PagesApi {
     final all = _Tail(), out = _Tail();
     const decoder = Utf8Decoder(allowMalformed: true);
     final drained = Future.wait([
-      proc.stdout.transform(decoder).forEach((s) => all.add(out.add(s))),
-      proc.stderr.transform(decoder).forEach(all.add),
+      proc.stdout.transform(decoder).forEach((s) {
+        all.add(out.add(s));
+        onOutput?.call(s);
+      }),
+      proc.stderr.transform(decoder).forEach((s) {
+        all.add(s);
+        onOutput?.call(s);
+      }),
     ]);
     var timedOut = false;
     final code = await proc.exitCode.timeout(timeout, onTimeout: () async {
@@ -693,6 +710,30 @@ Future<void> killTree(int pid) async {
   }
   for (final p in all) {
     Process.killPid(p, ProcessSignal.sigkill);
+  }
+}
+
+/// A running command's output for dashboards, sent in batches: what came
+/// within [_outputEvery] goes as one chunk (its tail, if that's a lot).
+class _LiveOutput {
+  _LiveOutput(this._send);
+
+  final void Function(String chunk) _send;
+  final _buf = StringBuffer();
+  Timer? _timer;
+
+  void add(String chunk) {
+    _buf.write(chunk);
+    _timer ??= Timer(_outputEvery, flush);
+  }
+
+  void flush() {
+    _timer?.cancel();
+    _timer = null;
+    if (_buf.isEmpty) return;
+    final text = _buf.toString();
+    _buf.clear();
+    _send(text.length > _outputLimit ? text.substring(text.length - _outputLimit) : text);
   }
 }
 

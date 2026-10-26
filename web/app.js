@@ -100,6 +100,25 @@ function highlight(text) {
   return escapeHtml(text).replace(re, '<mark>$1</mark>');
 }
 
+// http(s) addresses in [text] as links that open in a new tab; the rest goes
+// through [fmt] (escaping, the search highlight). Punctuation that ends a
+// sentence, and a ) with no ( in the address, stay out of the link.
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+function linkify(text, fmt = escapeHtml) {
+  let out = '', at = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    let url = m[0];
+    while (/[.,;:!?'")\]}]$/.test(url)) {
+      const opens = url.split('(').length, closes = url.split(')').length;
+      if (url.endsWith(')') && opens >= closes) break;
+      url = url.slice(0, -1);
+    }
+    out += fmt(text.slice(at, m.index)) + `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${fmt(url)}</a>`;
+    at = m.index + url.length;
+  }
+  return out + fmt(text.slice(at));
+}
+
 function rowHtml(e) {
   const ts = new Date(e.ts);
   const hh = String(ts.getHours()).padStart(2, '0');
@@ -107,7 +126,7 @@ function rowHtml(e) {
   const ss = String(ts.getSeconds()).padStart(2, '0');
   return `<div class="row ${e.level}"><span class="ts">${hh}:${mm}:${ss}</span>`
        + `<span class="tag">${TAG[e.level] || 'I'}</span>`
-       + `<span class="txt">${highlight(e.text)}</span></div>`;
+       + `<span class="txt">${linkify(e.text, highlight)}</span></div>`;
 }
 
 function render() {

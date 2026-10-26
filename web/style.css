@@ -302,6 +302,14 @@ body.resizing iframe { pointer-events: none; }
   font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
 }
 .ext-empty { padding: 24px; color: var(--muted); font-size: 12px; text-align: center; }
+.ext-out[hidden] { display: none; }
+.out-hist {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 6px; font-size: 11px; max-width: 240px; flex: 0 1 auto;
+}
+.out-hist[hidden] { display: none; }
+/* Addresses in a run's output and in the logs open in a new tab. */
+.ext-out a, .row .txt a { color: #79b8ff; text-decoration: underline; text-underline-offset: 2px; }
 .ok-mark { color: var(--system); }
 .fail-mark { color: var(--error); }
 

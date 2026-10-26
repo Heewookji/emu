@@ -27,7 +27,9 @@ const pageState = {
   pages: [],
   problems: [],
   current: 'debug',
-  last: {},              // page id → its last run
+  history: {},           // page id → its recent finished runs, newest first (this tab only)
+  viewing: {},           // page id → the history entry the output shows; null: the newest, or the run in flight
+  live: {},              // 'page.item' → the output of a run in flight, as it comes
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
   selected: {},          // page id → key value of the picked row
@@ -76,7 +78,7 @@ async function loadPages() {
     const j = await (await api('/api/pages')).json();
     pageState.pages = j.pages || [];
     pageState.problems = j.problems || [];
-    Object.assign(pageState.last, j.last || {});
+    for (const [id, run] of Object.entries(j.last || {})) remember(id, run);
   } catch (_) { return; }
   if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
   renderPageTabs();
@@ -365,8 +367,20 @@ function renderRunning(page) {
   }
 }
 
+const HISTORY_MAX = 10;
+const LIVE_LIMIT = 256 * 1024; // as much of a run's output as the server keeps
+
+// A finished run, once — the POST answer and the broadcast both bring it.
+function remember(pageId, run) {
+  if (!run?.at) return;
+  const hist = pageState.history[pageId] || [];
+  if (hist.some(r => r.item === run.item && r.at === run.at)) return;
+  pageState.history[pageId] = [run, ...hist].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, HISTORY_MAX);
+  pageState.viewing[pageId] = null; // show what just finished
+}
+
 function finishRun(page, item, key, run, quiet) {
-  pageState.last[page.id] = run;
+  remember(page.id, run);
   if (run.state) pageState.toggles[key] = run.state;
   if (!(quiet && run.ok)) toast(`${item.label}: ${run.ok ? 'done' : run.error || 'failed'}${run.then ? ` · ${run.then.action}` : ''}`);
   if (item.openUrl && run.ok) refreshShot(); // the server already waited for the app to settle
@@ -378,10 +392,19 @@ function onPageRun(msg) {
   const page = pageState.pages.find(p => p.id === msg.page);
   if (!page) return;
   const key = `${msg.page}.${msg.item}`;
-  if (msg.event === 'started') pageState.running.add(key);
-  else if (msg.event === 'finished') {
+  if (msg.event === 'output') {
+    pageState.live[key] = ((pageState.live[key] || '') + (msg.chunk || '')).slice(-LIVE_LIMIT);
+    if (currentPage() === page) renderOutputs(page);
+    return;
+  }
+  if (msg.event === 'started') {
+    pageState.running.add(key);
+    pageState.live[key] = '';
+    pageState.viewing[page.id] = null; // follow it
+  } else if (msg.event === 'finished') {
     pageState.running.delete(key);
-    pageState.last[page.id] = msg.run;
+    delete pageState.live[key];
+    remember(page.id, msg.run);
     if (msg.run?.state) pageState.toggles[key] = msg.run.state;
   }
   if (currentPage() !== page) return;
@@ -428,6 +451,7 @@ function renderPageBody(page) {
       else if (b.kind === 'diff') initDiff(page, b, el);
       else if (b.kind === 'html') initHtml(page, b, el);
       else if (b.kind === 'form') initForm(page, b, el);
+      else if (b.kind === 'output') initOutput(page, b, el);
     }
   }
   addResizers(page, areas);
@@ -533,7 +557,7 @@ function addResizer(page, host, axis) {
 function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
 
 function renderOutputs(page) {
-  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) el.innerHTML = outputHtml(page); }
+  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) renderOutput(page, el); }
 }
 
 // Fetch list rows / diff patches. A block that reads {{selected.*}} waits for
@@ -1306,21 +1330,68 @@ function renderFormButtons(page, block) {
   });
 }
 
-// output: the page's last run — what ran, how it ended, what it printed.
-function outputHtml(page) {
+// output: the page's runs. One in flight shows its output as it comes; a
+// finished one what ran, how it ended and what it printed. Addresses are
+// links. The head's menu goes back to an earlier run (this tab keeps the last
+// 10); a new run brings it to the newest again.
+function initOutput(page, block, el) {
+  el.innerHTML = '<div class="blk-head"><span class="name">output</span><span class="cmd" data-cmd></span>'
+    + '<span class="meta" data-meta></span><select class="out-hist" data-hist title="recent runs" hidden></select></div>'
+    + '<div class="ext-empty" data-none>no run yet — press a toolbar button</div><pre class="ext-out" data-out hidden></pre>';
+  el.querySelector('[data-hist]').onchange = (e) => {
+    pageState.viewing[page.id] = e.target.value === '' ? null : Number(e.target.value);
+    renderOutputs(page);
+  };
+}
+
+function renderOutput(page, el) {
   const busy = [...pageState.running].filter(k => k.startsWith(`${page.id}.`));
-  const run = pageState.last[page.id];
-  if (busy.length) {
-    return `<div class="blk-head"><span class="name">output</span><span class="cmd">running ${busy.map(k => escapeHtml(k.slice(page.id.length + 1))).join(', ')}…</span></div>`
-      + `<pre class="ext-out muted">${run ? escapeHtml(stripAnsi(run.output)) : ''}</pre>`;
+  const hist = pageState.history[page.id] || [];
+  const viewing = pageState.viewing[page.id] ?? null;
+  const liveKey = viewing === null ? busy[busy.length - 1] : undefined; // the latest started
+  const run = liveKey ? null : hist[viewing ?? 0];
+  const cmd = el.querySelector('[data-cmd]'), meta = el.querySelector('[data-meta]'), pre = el.querySelector('[data-out]');
+  renderHistory(el, hist, viewing, busy.length > 0);
+  el.querySelector('[data-none]').hidden = !!(liveKey || run);
+  pre.hidden = !(liveKey || run);
+  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; return; }
+  // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
+  const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
+  const prev = el.dataset.shown || '';
+  const same = prev === id || (!liveKey && prev === `live:${page.id}.${run.item}`);
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+  let text;
+  if (liveKey) {
+    cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
+    cmd.title = '';
+    meta.textContent = '';
+    text = pageState.live[liveKey] || '';
+  } else {
+    const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+    const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+    cmd.textContent = `$ ${run.command}`;
+    cmd.title = run.command;
+    meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
+    text = run.output;
   }
-  if (!run) return '<div class="blk-head"><span class="name">output</span></div><div class="ext-empty">no run yet — press a toolbar button</div>';
-  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
-  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
-  const when = new Date(run.at).toLocaleTimeString();
-  return `<div class="blk-head"><span class="name">output</span><span class="cmd" title="${escapeHtml(run.command)}">$ ${escapeHtml(run.command)}</span>`
-    + `<span class="meta">${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${when}${then}</span></div>`
-    + `<pre class="ext-out">${escapeHtml(stripAnsi(run.output)) || '<span class="muted">(no output)</span>'}</pre>`;
+  const body = stripAnsi(text);
+  pre.innerHTML = body ? linkify(body) : `<span class="muted">${liveKey ? 'no output yet' : '(no output)'}</span>`;
+  el.dataset.shown = id;
+  if (!same) pre.scrollTop = liveKey ? pre.scrollHeight : 0;
+  else if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+// The menu of recent runs, rebuilt only when they change — not for every
+// piece of live output, which would close it under the pointer.
+function renderHistory(el, hist, viewing, live) {
+  const sel = el.querySelector('[data-hist]');
+  const sig = `${hist.map(r => `${r.item}@${r.at}`).join('|')}#${viewing}#${live}`;
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.hidden = !(hist.length > 1 || (hist.length && live));
+  sel.innerHTML = `<option value="">${live ? 'running now' : 'latest'}</option>` + hist.map((r, i) =>
+    `<option value="${i}">${escapeHtml(`${new Date(r.at).toLocaleTimeString()} · ${r.item} ${r.ok ? '✓' : '✗'}`)}</option>`).join('');
+  sel.value = viewing === null ? '' : String(viewing);
 }
 
 // ---- dialogs -----------------------------------------------------------------

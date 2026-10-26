@@ -893,7 +893,7 @@ pages:
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
 | `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
-| `output` | — | The page's last run: command, exit code, time, output |
+| `output` | — | The page's runs: one in flight shows its output as it comes, a finished one its command, exit code, time and output. Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;

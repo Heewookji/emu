@@ -815,7 +815,7 @@ pages:
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
 | `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
 | `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |
-| `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+| `output` | — | 이 페이지의 실행 — 도는 중이면 출력이 오는 대로 쌓이고, 끝나면 명령·종료 코드·시간·출력. 주소(`https://…`)는 새 탭으로 여는 링크(Logs 탭도). 머리 메뉴로 최근 10개 실행을 다시 본다(이 탭에만 둔다) |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
   그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸(그 form 의 버튼에서), 또는 html 블록이 자기 액션에 넘기는 값(`inputs:` 에 적은 이름만). `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
