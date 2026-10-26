@@ -499,16 +499,12 @@ class PagesApi {
 
   void _autoChanged(String pageId, String itemId, AutoRun auto, List<String> paths) {
     final st = _autoStates.putIfAbsent('$pageId.$itemId', _AutoState.new);
-    // Each path costs a stat, so stop once the outcome can't change: a run in
-    // flight needs one change made during it, an idle one a single new change.
     for (final path in paths) {
-      final started = st.started;
-      if (started != null && (st.once || st.again)) break;
       final at = _modified(path);
       final (start, end) = (st.lastStart, st.lastEnd);
-      if (started != null) {
+      if (st.started case final started?) {
         // During a run: once more after it — unless this run is that once more.
-        if (!at.isBefore(started)) {
+        if (!st.once && !at.isBefore(started)) {
           st.again = true;
           st.note(path);
         }
@@ -522,7 +518,6 @@ class PagesApi {
       } else {
         st.note(path);
         st.pending = true;
-        break;
       }
     }
     if (!st.pending && !st.pendingOnce) return;
@@ -910,10 +905,11 @@ class _AutoState {
     if (_paths.length < _noteLimit) _paths.add(path);
   }
 
-  /// The first few changed paths, and how many more.
+  /// The first few changed paths, by name, and how many more.
   String get because {
-    final first = _paths.take(3).join(', ');
-    return _paths.length > 3 ? '$first +${_paths.length - 3}' : first;
+    final paths = _paths.toList()..sort();
+    final first = paths.take(3).join(', ');
+    return paths.length > 3 ? '$first +${paths.length - 3}' : first;
   }
 
   /// Forget what was waiting, and its timer.
@@ -944,10 +940,10 @@ class _AutoState {
 const _liveBatchLimit = 64 * 1024;
 
 /// A running command's output for dashboards, sent in batches: what came
-/// within [_outputEvery] goes as one chunk — its tail, after a mark, when it
-/// is over the limit ([_liveBatchLimit] unless given). What waits for the
-/// next batch is held to the tail too, so a command that prints fast can't
-/// grow it unbounded.
+/// within [_outputEvery] goes as one chunk — its tail, from a whole line and
+/// after a mark on a line of its own, when it is over the limit
+/// ([_liveBatchLimit] unless given). What waits for the next batch is held to
+/// the tail too, so a command that prints fast can't grow it unbounded.
 class LiveOutput {
   LiveOutput(this._send, {int limit = _liveBatchLimit}) : _limit = limit, _tail = _Tail(limit);
 
@@ -955,6 +951,7 @@ class LiveOutput {
   final int _limit;
   _Tail _tail;
   int _added = 0; // characters that came for the next batch, kept or not
+  bool _midLine = false; // the last batch sent ended within a line
   Timer? _timer;
 
   /// Characters held for the next batch: at most twice the limit.
@@ -969,12 +966,20 @@ class LiveOutput {
   void flush() {
     _timer?.cancel();
     _timer = null;
-    final text = _tail.text;
+    var text = _tail.text;
     if (text.isEmpty) return;
-    final skipped = _added - text.length;
+    var skipped = _added - text.length;
+    // Cut within a line: the tail starts at its next one.
+    final cut = skipped > 0 ? text.indexOf('\n') : -1;
+    if (cut >= 0 && cut < text.length - 1) {
+      skipped += cut + 1;
+      text = text.substring(cut + 1);
+    }
     _tail = _Tail(_limit);
     _added = 0;
-    _send(skipped > 0 ? '… $skipped characters skipped while streaming …\n$text' : text);
+    final out = skipped > 0 ? '${_midLine ? '\n' : ''}… $skipped characters skipped while streaming …\n$text' : text;
+    _midLine = !out.endsWith('\n');
+    _send(out);
   }
 }
 

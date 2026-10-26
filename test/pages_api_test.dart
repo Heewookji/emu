@@ -177,15 +177,25 @@ void main() {
     expect(sent, hasLength(1)); // nothing new, nothing sent
   });
 
+  test('a cut batch goes on from a whole line, after its mark on a line of its own', () {
+    final sent = <String>[];
+    final live = LiveOutput(sent.add, limit: 20);
+    live.add('first part');
+    live.flush();
+    live.add('line 1\nline 2\nline 3\nline 4\n'); // 28: its last 20 begin within "line 2"
+    live.flush();
+    expect(sent, ['first part', '\n… 14 characters skipped while streaming …\nline 3\nline 4\n']);
+  });
+
   test('a command that prints faster than dashboards need sends them the tail of each batch', () async {
     final (_, j) = await run('big');
     expect(j['ok'], isTrue);
     expect('${j['output']}'.length, 256 * 1024); // the run keeps its last 256 KB, as before
     final chunks = [for (final b in broadcasts) if (b['event'] == 'output') '${b['chunk']}'];
     expect(chunks, isNotEmpty);
+    final mark = RegExp(r'^\n?… \d+ characters skipped while streaming …\n');
     for (final c in chunks) {
-      final body = c.startsWith('… ') ? c.substring(c.indexOf('\n') + 1) : c;
-      expect(body.length, lessThanOrEqualTo(64 * 1024));
+      expect(c.replaceFirst(mark, '').length, lessThanOrEqualTo(64 * 1024));
     }
   });
 
@@ -434,6 +444,28 @@ void main() {
       expect(api.autoIdle('tools.sync'), isTrue);
       await Future<void>.delayed(const Duration(milliseconds: 150)); // past its debounce (30 ms)
       expect(runs(), isEmpty);
+
+      // On again, the next change runs it for that change alone.
+      await call('POST', '/api/pages/tools/auto/sync', {'on': true});
+      File('${root.path}/tpl/b.txt').writeAsStringSync('b');
+      api.filesChanged(['tpl/b.txt']);
+      await settled('tools.sync');
+      expect(runs(), ['sync']);
+      expect(logs.map((l) => l.$1), contains('[ext] tools.sync ▸ ./tool/t.sh log sync   (auto: tpl/b.txt changed)'));
+    });
+
+    test('its log line names the first three changes by name, and how many more', () async {
+      final names = ['tpl/e.txt', 'tpl/b.txt', 'tpl/d.txt', 'tpl/a.txt', 'tpl/c.txt'];
+      for (final name in names) {
+        File('${root.path}/$name')
+          ..createSync(recursive: true)
+          ..writeAsStringSync(name);
+      }
+      api.filesChanged(names);
+      await settled('tools.sync');
+      expect(runs(), ['sync']);
+      expect(logs.map((l) => l.$1),
+          contains('[ext] tools.sync ▸ ./tool/t.sh log sync   (auto: tpl/a.txt, tpl/b.txt, tpl/c.txt +2 changed)'));
     });
 
     test('a file changed while it runs makes it run once more — no more, though it writes what it watches', () async {

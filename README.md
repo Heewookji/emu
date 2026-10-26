@@ -894,7 +894,7 @@ pages:
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
 | `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
-| `output` | — | The page's runs: one in flight shows its output as it comes, with the seconds it has been running, a finished one its command, exit code, time and output. A command that prints over 64 KB in a tenth of a second sends only the end of it, after a count of what it skipped (a finished run's output is as before). Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
+| `output` | — | The page's runs: one in flight shows its output as it comes, with the seconds it has been running, a finished one its command, exit code, time and output. A command that prints over 64 KB in a tenth of a second sends only the end of it, from a whole line, after a line counting what it skipped (a finished run's output is as before). Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
@@ -978,13 +978,13 @@ pages:
 - **Folders.** `tree: path` (or `tree: [env, path]`) draws a list as folders: the values of those
   columns, each split at `/`, make a row's path — `prod / tpl / home / 4.48.0 / home_banner.txt`. Its
   last part names the row; the parts before it are folders, with a row count, that a click opens or
-  closes (⌥/Alt-click: every folder below too). Rows keep their columns, buttons, pick and checks; a folder's checkbox checks every row
-  below it, and a closed folder holding the picked row is marked. Folders start closed —
-  `tree: {columns: [env, path], open: 1}` opens the first level — and what you open is kept per
-  browser. A filter also matches the path and shows the matching rows with every folder above them
-  open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
-  each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
-  the rows flat, the path columns first.
+  closes (⌥/Alt-click: every folder below too). Rows keep their columns, buttons, pick and checks;
+  a folder's checkbox checks every row below it, and a closed folder holding the picked row is
+  marked. Folders start closed — `tree: {columns: [env, path], open: 1}` opens the first level —
+  and what you open is kept per browser. A filter also matches the path and shows the matching
+  rows with every folder above them open. The tree's head sorts folders and rows by name; another
+  column's head sorts the rows within each folder. Without `columns:`, the path columns aren't
+  repeated as columns. `emu block` prints the rows flat, the path columns first.
 - **Run on save.** An action with `auto:` also runs when a project file it watches changes — save
   a template and it syncs and reloads with no click:
 

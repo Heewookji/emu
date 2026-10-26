@@ -44,7 +44,7 @@ const pageState = {
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
-  stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
+  stale: new Set(),      // 'page.block' to fetch when it shows: changed (watch) while hidden or folded
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
   folded: {},            // page id → the areas folded to a strip
   foldedBlocks: {},      // page id → the blocks folded to their head
@@ -83,7 +83,7 @@ async function loadPages() {
     const j = await (await api('/api/pages')).json();
     pageState.pages = j.pages || [];
     pageState.problems = j.problems || [];
-    for (const [id, run] of Object.entries(j.last || {})) remember(id, run, { follow: false });
+    for (const [id, run] of Object.entries(j.last || {})) remember(id, run);
     pageState.auto = j.auto || {};
   } catch (_) { return; }
   if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
@@ -441,14 +441,12 @@ const HISTORY_MAX = 10;
 const LIVE_LIMIT = 256 * 1024; // as much of a run's output as the server keeps
 
 // A finished run, once — the POST answer and the broadcast both bring it.
-// [follow]: the output shows it (a run that just finished, not one read
-// back when the pages reload).
-function remember(pageId, run, { follow = true } = {}) {
+function remember(pageId, run) {
   if (!run?.at) return;
   const hist = pageState.history[pageId] || [];
   if (hist.some(r => r.item === run.item && r.at === run.at)) return;
   pageState.history[pageId] = [run, ...hist].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, HISTORY_MAX);
-  if (follow) pageState.viewing[pageId] = null;
+  pageState.viewing[pageId] = null; // show what just finished
 }
 
 function finishRun(page, item, key, run, quiet) {
@@ -1004,7 +1002,7 @@ function treeItems(page, block, root, { filtering, sort, format }) {
 
 function treeIndent(depth) { return 10 + depth * 16; }
 
-// [deep] (⌥-click): every folder below goes the same way.
+// [deep] (⌥/Alt-click): every folder below goes the same way.
 function toggleDir(page, block, d, { deep = false } = {}) {
   const key = blockKey(page, block);
   const opened = { ...pageState.tree[key] };
@@ -1078,7 +1076,7 @@ function renderListRows(page, block) {
       + '</tr>';
   };
   const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}"`
-    + `${filter ? '' : ' title="⌥-click: every folder below too"'}>`
+    + `${filter ? '' : ' title="⌥/Alt-click: every folder below too"'}>`
     + (checked ? `<td class="lst-check">${checkBox('data-check-dir', d.all)}</td>` : '')
     + `<td class="tree-name" colspan="${cols.length + 1}" style="padding-left: ${treeIndent(d.depth)}px">`
     + `<span class="tree-caret">${open ? '▾' : '▸'}</span>${escapeHtml(d.name)}<span class="tree-count">${d.all.length}</span></td>`
