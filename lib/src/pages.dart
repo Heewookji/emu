@@ -390,6 +390,16 @@ class ListCheck {
       };
 }
 
+/// The order a list starts in (`sort: minVer:desc`); clicking a column head
+/// in the dashboard changes it.
+class ListSort {
+  const ListSort(this.column, {this.descending = false});
+  final String column;
+  final bool descending;
+
+  Map<String, dynamic> toJson() => {'key': column, 'dir': descending ? 'desc' : 'asc'};
+}
+
 /// Whether a `check.column` value means checked: true, a non-zero number,
 /// or a word like yes/on/checked.
 bool isCheckedValue(Object? v) =>
@@ -413,6 +423,7 @@ class ListBlock extends PageBlock {
     this.columns = const [],
     this.rowActions = const [],
     this.check,
+    this.sort,
   });
 
   final PageCommand run;
@@ -426,6 +437,9 @@ class ListBlock extends PageBlock {
   final List<ListColumn> columns;
   final List<PageAction> rowActions;
   final ListCheck? check;
+
+  /// The starting order; null: as the command prints the rows.
+  final ListSort? sort;
 
   @override
   PageCommand get command => run;
@@ -453,6 +467,7 @@ class ListBlock extends PageBlock {
         'columns': [for (final c in columns) c.toJson()],
         'rowActions': [for (final a in rowActions) a.toJson()],
         'check': ?check?.toJson(),
+        'sort': ?sort?.toJson(),
         'watch': watch,
       };
 }
@@ -1029,6 +1044,16 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     final a = _parseAction(body, rid, '$where.$rid', rowAllowed, problems, bulk: bulk);
     if (a != null) rowActions.add(a);
   }
+  ListSort? sort;
+  if (m['sort'] != null) {
+    final parts = '${m['sort']}'.split(':');
+    final order = parts.length == 2 ? parts[1] : 'asc';
+    if (m['sort'] is! String || parts.first.isEmpty || parts.length > 2 || !const {'asc', 'desc'}.contains(order)) {
+      problems.add('$where.sort: expected <col> or <col>:asc|desc (got "${m['sort']}")');
+      return null;
+    }
+    sort = ListSort(parts.first, descending: order == 'desc');
+  }
   return ListBlock(
     id: id,
     area: area,
@@ -1039,6 +1064,7 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     columns: columns,
     rowActions: rowActions,
     check: check,
+    sort: sort,
   );
 }
 

@@ -180,6 +180,22 @@ void main() {
       ]);
     });
 
+    test('sort: a list starts in the order of a column, ascending unless :desc', () {
+      final c = parse([
+        {'list': {'id': 'items', 'run': ['./tool/t'], 'sort': 'minVer:desc'}},
+        {'list': {'id': 'asc', 'run': ['./tool/t'], 'sort': 'name'}},
+        {'list': {'id': 'bad', 'run': ['./tool/t'], 'sort': 'name:down'}},
+        {'list': {'id': 'list', 'run': ['./tool/t'], 'sort': ['name']}},
+      ]);
+      final page = c.page('p')!;
+      expect((page.block('items') as ListBlock).toJson()['sort'], {'key': 'minVer', 'dir': 'desc'});
+      expect((page.block('asc') as ListBlock).toJson()['sort'], {'key': 'name', 'dir': 'asc'});
+      expect(c.problems, [
+        'p.bad.sort: expected <col> or <col>:asc|desc (got "name:down")',
+        'p.list.sort: expected <col> or <col>:asc|desc (got "[name]")',
+      ]);
+    });
+
     test('fill puts each value inside its own argument', () {
       const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
       final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});

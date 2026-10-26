@@ -809,7 +809,7 @@ pages:
 
 | 블록 | 명령이 출력하는 것 | 보여 주는 것 |
 |------|--------------------|--------------|
-| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다 |
+| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다. 칸 머리를 누르면 그 칸으로 정렬(오름차순 → 내림차순 → 명령이 낸 순서, 숫자는 숫자로, `1.2.10` 같은 버전은 `1.2.9` 뒤로)하고, `sort: minVer:desc` 로 처음 순서를 정한다. 선택을 만드는 list 에서는 ↑·↓ 로 위아래 행을 고르고(따라오는 블록은 키를 멈춘 뒤 한 번만 불러온다), `/` 로 필터에 간다(↓ 나 Enter 로 돌아옴) |
 | `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
 | `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
@@ -887,7 +887,7 @@ pages:
   다시 받는다. `bulk: true` 인 행 버튼은 목록 머리에도 생겨 체크한 행마다 차례로 한 번씩 돌리고, 하나
   실패하면 멈춘다(`confirm: true` 면 한 번만 묻는다).
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
-  작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
+  작업 폴더 포함). 고른 행, 세그먼트, 칸 머리로 바꾼 정렬은 브라우저별로 기억한다.
 - 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
   (argv 만, 기기 셸용 인용, 앱이 가라앉을 때까지 대기) 기기에 링크를 열고 화면 패널을 새로 고친다.
   딥링크 페이지에는 스크립트가 필요 없다:

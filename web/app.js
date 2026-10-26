@@ -616,10 +616,11 @@ document.querySelectorAll('.lvl').forEach(btn => {
   });
 });
 
-// Keyboard: r = reload, R = restart (when not typing in the search box).
+// Keyboard: r = reload, R = restart (when not typing in a field).
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return; // don't hijack typing in any field
-  if (confirmResolve) return; // the confirm dialog is up
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return; // don't hijack typing in any field
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // a browser shortcut (⌘R reloads the page, not the app)
+  if (dialogOpen()) return; // a dialog is up (pages.js)
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
 });

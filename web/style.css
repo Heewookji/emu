@@ -342,6 +342,13 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 /* `:start` cuts the front instead: rtl moves the ellipsis to the left, the inner span keeps the text ltr. */
 .lst .cell.clip-start { direction: rtl; text-align: left; }
 .lst .cell.clip-start > span { direction: ltr; unicode-bidi: embed; }
+.lst th.sortable { cursor: pointer; user-select: none; }
+.lst th.sortable:hover, .lst th.sorted { color: var(--fg); }
+.lst .sort-mark { margin-left: 4px; font-size: 9px; color: var(--accent); }
+/* Below the sticky head when ↑/↓ scrolls a row into view. */
+.lst tbody tr { scroll-margin-top: 30px; }
+.blk-scroll:focus { outline: none; }
+.blk-scroll:focus .lst tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .lst tr.pick { cursor: pointer; }
 .lst tr.pick:hover td { background: var(--bg-row-alt); }
 .lst tr.sel td { background: #1c2430; }

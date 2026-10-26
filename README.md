@@ -885,7 +885,7 @@ pages:
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
-| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways |
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways. Click a column head to sort by it (ascending, descending, then the command's order; numbers as numbers, versions like `1.2.10` after `1.2.9`); `sort: minVer:desc` sets where it starts. In the selection list, ↑/↓ pick the row above or below — the blocks that follow the pick fetch once the keys rest — and `/` jumps to the filter (↓ or Enter comes back) |
 | `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
@@ -972,8 +972,8 @@ pages:
   list's head that runs it once per checked row, in turn, stopping at the first failure (a
   `confirm: true` one asks once).
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
-  changes — git-ignored work folders included. The picked row and segment are remembered
-  per browser.
+  changes — git-ignored work folders included. The picked row, the segment and a clicked sort
+  are remembered per browser.
 - Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
   link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
   waits for the app to settle) and refreshes the screen panel. A deep-link page needs no

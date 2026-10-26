@@ -34,6 +34,7 @@ const pageState = {
   checked: {},           // 'page.block' → key values of the checked rows (check: true)
   bulk: {},              // 'page.block.action' → progress of a bulk run, "2/5"
   seg: {},               // 'page.block' → chosen segment
+  sort: {},              // 'page.block' → {key, dir} from a column head click; null: the command's order
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
@@ -48,12 +49,16 @@ try {
   if (prefs.selected && typeof prefs.selected === 'object') pageState.selected = prefs.selected;
   if (prefs.checked && typeof prefs.checked === 'object') pageState.checked = prefs.checked;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
+  if (prefs.sort && typeof prefs.sort === 'object') pageState.sort = prefs.sort;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
 } catch (_) {}
 function savePagePrefs() {
   try {
-    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({ selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, input: pageState.input, sizes: pageState.sizes }));
+    localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
+      selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort,
+      input: pageState.input, sizes: pageState.sizes,
+    }));
   } catch (_) {}
 }
 
@@ -122,7 +127,11 @@ function selectedRow(page) {
   return rows.find(r => rowKeyOf(list, r) === key) || null;
 }
 
-function select(page, list, row) {
+const followTimers = {}; // page id → the pending fetch after a pick made with the arrow keys
+
+// [soon]: the pick came from an arrow key — what follows it is fetched once
+// the keys rest, so stepping through rows fetches only the row stopped at.
+function select(page, list, row, { soon = false } = {}) {
   const key = rowKeyOf(list, row);
   if (pageState.selected[page.id] === key) return;
   pageState.selected[page.id] = key;
@@ -130,7 +139,21 @@ function select(page, list, row) {
   renderListRows(page, list);
   renderPageBar(page);
   // Everything that reads {{selected.*}} follows the pick.
-  loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+  const follow = () => loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+  clearTimeout(followTimers[page.id]);
+  if (soon) followTimers[page.id] = setTimeout(follow, 200);
+  else follow();
+}
+
+// ↑/↓ in the selection list: pick the row above or below, as shown (filter
+// and order applied).
+function stepSelection(page, list, step) {
+  const rows = listShown[blockKey(page, list)] || [];
+  if (!rows.length) return;
+  const i = rows.findIndex(r => rowKeyOf(list, r) === pageState.selected[page.id]);
+  const next = i < 0 ? (step > 0 ? 0 : rows.length - 1) : Math.min(Math.max(i + step, 0), rows.length - 1);
+  select(page, list, rows[next], { soon: true });
+  blockEl(list)?.querySelector('tr.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
 // Placeholder values sent with a run: the picked row, the checked rows and,
@@ -542,12 +565,31 @@ function initList(page, block, el) {
     + `<input class="blk-search" type="text" placeholder="filter…" autocomplete="off" spellcheck="false" /></div>`
     + '<div class="blk-scroll" data-rows></div>';
   const search = el.querySelector('.blk-search');
+  const rowsEl = el.querySelector('[data-rows]');
   search.value = pageState.search[key] || '';
   search.addEventListener('input', () => { pageState.search[key] = search.value; renderListRows(page, block); });
   // A value cut with an ellipsis shows whole on hover.
-  el.querySelector('[data-rows]').addEventListener('mouseover', (e) => {
+  rowsEl.addEventListener('mouseover', (e) => {
     const cell = e.target.closest?.('.cell');
     if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent;
+  });
+  if (block.id !== page.selection) return;
+  // The selection list takes the keys once clicked: ↑/↓ pick, / goes to the
+  // filter, and ↓ or Enter there comes back.
+  rowsEl.tabIndex = 0;
+  rowsEl.addEventListener('keydown', (e) => {
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      stepSelection(page, block, e.key === 'ArrowDown' ? 1 : -1);
+    } else if (e.key === '/') {
+      e.preventDefault();
+      search.focus();
+      search.select();
+    }
+  });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); rowsEl.focus(); }
   });
 }
 
@@ -588,6 +630,51 @@ function cellHtml(v, col) {
     : `<span class="cell"${style}>${text}</span>`;
 }
 
+// ---- list order --------------------------------------------------------------
+// A click on a column head sorts by it — ascending, descending, then the
+// command's own order again. `sort:` in emu.yaml is where a list starts; a
+// click is kept per browser.
+
+const listShown = {}; // 'page.block' → the rows as last drawn (filter and order applied), for ↑/↓
+
+function sortOf(page, block) {
+  const key = blockKey(page, block);
+  return key in pageState.sort ? pageState.sort[key] : block.sort || null;
+}
+
+function cycleSort(page, block, col) {
+  const cur = sortOf(page, block);
+  pageState.sort[blockKey(page, block)] = cur?.key !== col ? { key: col, dir: 'asc' }
+    : cur.dir === 'asc' ? { key: col, dir: 'desc' } : null;
+  savePagePrefs();
+  renderListRows(page, block);
+}
+
+// Numbers as numbers and text in natural order, so a version 1.2.10 comes
+// after 1.2.9. Blanks go last either way; equal values keep the command's order.
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function sortRows(rows, sort, format) {
+  if (!sort) return rows;
+  const dir = sort.dir === 'desc' ? -1 : 1;
+  const blank = (v) => v === null || v === undefined || v === '';
+  const compare = (a, b) => format === 'count' || (typeof a === 'number' && typeof b === 'number')
+    ? (Number(a) || 0) - (Number(b) || 0)
+    : naturalOrder.compare(cellText(a), cellText(b));
+  return rows.map((r, i) => [r, i]).sort(([a, i], [b, j]) => {
+    const x = a[sort.key], y = b[sort.key];
+    if (blank(x) || blank(y)) return blank(x) === blank(y) ? i - j : blank(x) ? 1 : -1;
+    return dir * compare(x, y) || i - j;
+  }).map(([r]) => r);
+}
+
+function sortHead(c, sort) {
+  const dir = sort?.key === c.key ? sort.dir : null;
+  return `<th class="sortable${dir ? ' sorted' : ''}" data-sort="${escapeHtml(c.key)}" title="sort by ${escapeHtml(c.key)}"`
+    + ` aria-sort="${dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'}">${escapeHtml(c.key)}`
+    + `<span class="sort-mark">${dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : ''}</span></th>`;
+}
+
 function renderListRows(page, block) {
   const el = blockEl(block);
   if (!el || currentPage() !== page) return;
@@ -597,10 +684,17 @@ function renderListRows(page, block) {
   const rows = entry?.result?.ok ? entry.result.rows : null;
   el.classList.toggle('loading', !!entry?.loading);
   renderChecksHead(page, block, el);
-  if (!rows) { host.innerHTML = blockNote(page, block, entry); el.querySelector('[data-count]').textContent = ''; return; }
+  if (!rows) {
+    listShown[key] = [];
+    host.innerHTML = blockNote(page, block, entry);
+    el.querySelector('[data-count]').textContent = '';
+    return;
+  }
   const cols = listColumns(block, rows);
   const filter = (pageState.search[key] || '').toLowerCase();
-  const shown = filter ? rows.filter(r => cols.some(c => cellText(r[c.key]).toLowerCase().includes(filter))) : rows;
+  const sort = sortOf(page, block);
+  const matched = filter ? rows.filter(r => cols.some(c => cellText(r[c.key]).toLowerCase().includes(filter))) : rows;
+  const shown = listShown[key] = sortRows(matched, sort, cols.find(c => c.key === sort?.key)?.format);
   const selectable = block.id === page.selection;
   const picked = selectable ? pageState.selected[page.id] : undefined;
   el.querySelector('[data-count]').textContent = filter ? `${shown.length} / ${rows.length}` : `${rows.length}`;
@@ -611,7 +705,7 @@ function renderListRows(page, block) {
   const checkAll = checked
     ? `<th class="lst-check"><input type="checkbox" data-check-all title="check all shown"${shown.length && shownChecked === shown.length ? ' checked' : ''}${checking || !shown.length ? ' disabled' : ''} /></th>` : '';
   host.innerHTML = rows.length
-    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
+    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => sortHead(c, sort)).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
       + shown.map((r) => {
         const rk = rowKeyOf(block, r);
         return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
@@ -628,6 +722,7 @@ function renderListRows(page, block) {
       + (entry.result.truncated ? `<div class="ext-empty">first ${rows.length} of ${entry.result.truncated} rows</div>` : '')
     : '<div class="ext-empty">no rows</div>';
   const byKey = new Map(shown.map(r => [rowKeyOf(block, r) ?? '', r]));
+  host.querySelectorAll('th[data-sort]').forEach(th => { th.onclick = () => cycleSort(page, block, th.dataset.sort); });
   const all = host.querySelector('[data-check-all]');
   if (all) {
     all.indeterminate = shownChecked > 0 && shownChecked < shown.length;
