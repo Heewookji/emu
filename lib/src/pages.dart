@@ -989,6 +989,11 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
         '${run.placeholders.map((k) => '{{$k}}').join(', ')} with');
     return null;
   }
+  if (auto != null && interactive) {
+    problems.add('$where.auto: an action that runs on its own has no one to answer what it asks — '
+        'its questions would all be answered null; drop interactive or auto');
+    return null;
+  }
   return PageAction(
       id: id,
       label: label,

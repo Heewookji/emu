@@ -353,6 +353,7 @@ void main() {
           {'action': {'id': 'b', 'run': ['x'], 'askTimeout': 5}},
           {'action': {'id': 'c', 'openUrl': 'app://x', 'interactive': true}},
           {'action': {'id': 'd', 'run': ['x'], 'interactive': true, 'askTimeout': 0}},
+          {'action': {'id': 'e', 'run': ['x'], 'interactive': true, 'auto': {'watch': ['tpl/**']}}},
         ],
       },
     ]);
@@ -361,6 +362,9 @@ void main() {
       'p.b.askTimeout: applies to an action with interactive: true',
       'p.c: interactive works with run:, not openUrl',
       'p.d.askTimeout: askTimeout must be a positive number of seconds (got "0")',
+      'p.e.auto: an action that runs on its own has no one to answer what it asks — '
+          'its questions would all be answered null; drop interactive or auto',
     ]);
+    expect(bad.pages.single.toolbar, isEmpty);
   });
 }

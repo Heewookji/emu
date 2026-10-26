@@ -1,7 +1,7 @@
 # An action whose command asks while it runs (`interactive: true`, #49): it
 # prints `::emu-ask {…}` lines and reads the answers from stdin. From the
 # dashboard the tab that pressed it asks; from `emu run` the terminal does;
-# with no one to answer (a pipe, an `auto:` run) every answer is null and the
+# with no one to answer (a pipe, CI) every answer is null and the
 # tool stops on its own. Copy this folder's emu.yaml `pages:` and tool/ into a
 # Flutter project to try it with `emu up`.
 pages:

@@ -1141,10 +1141,11 @@ pages:
     The dialog is the dashboard's own, as for custom views: text only, headed with the page and
     action that ask, one at a time (a question waits for an open dialog), Cancel focused when
     `danger`. Cancel answers `false` (confirm) or `null`.
-  - The answer is `null` when no one can answer — `emu run` without a terminal (a pipe, CI), an
-    `auto:` run, the tab closed — or no answer came in `askTimeout`; a line emu can't read (not
+  - The answer is `null` when no one can answer — `emu run` without a terminal (a pipe, CI),
+    the tab closed — or no answer came in `askTimeout`; a line emu can't read (not
     JSON, an unknown `kind`, over 64 KB) is answered `null` too, with a `⚠ emu-ask` note in the
-    output. `EMU_ASK=1` tells the command someone may answer (`0` otherwise), so a tool can stop
+    output. `interactive: true` with `auto:` is a config error: a run that starts on its own has
+    no one to answer. `EMU_ASK=1` tells the command someone may answer (`0` otherwise), so a tool can stop
     up front rather than ask into the void. Write tools as "can't ask → stop", the way they work
     without emu.
   - The run's `timeout:` stands still while a question waits: what counts is the command's own
