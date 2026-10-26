@@ -663,6 +663,36 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 원래 상태로 돌아와야 할 왕복을 반복했는데 계속 늘어나는 클래스가 있다면 그게
 이 커맨드가 잡으려는 누수 신호다.
 
+### report — emu 에 버그·아이디어 알리기
+
+`emu report` 는 지금 있는 곳(CLI, 대시보드의 **⚑ Report** 버튼, 허브 서랍)에서 바로
+[github.com/HuanSuh/emu](https://github.com/HuanSuh/emu/issues) 에 이슈를 보낸다. 보낼 이슈 전체를 먼저 보여 주고,
+확인한 뒤에만 보낸다.
+
+```bash
+emu report bug "reload 후 화면이 그대로" -m "1. 수정 … 2. r … 3. …" --attach logs --attach errors
+# → 제목·라벨·본문을 보낼 그대로 찍고: Send this issue? [y/N]
+emu report feature "…" --body-file idea.md      # 또는 -m; --body-file - 는 stdin
+emu report question "…" --dry-run               # 보여 주기만; 초안을 남김 → emu report --send <id>
+emu report --mine                               # 내가 보낸 리포트와 상태 (open · fixing · fixed · closed)
+```
+
+- **종류** — `bug` / `feature` / `question`. 저장소에 라벨이 있고 붙일 권한이 있으면 `bug` / `enhancement` /
+  `question` 라벨을 붙인다.
+- **첨부** — 고른 것만: `--attach logs[:N]`(최근 N줄, 기본 200), `errors`(최근 예외 배너), `shot`(지금 화면),
+  파일 경로(텍스트는 본문에, 이미지는 스크린샷으로).
+- **환경 정보** — 끝에 emu 버전·설치 방식, OS, Flutter/Dart, 기기 종류(`android · emulator · Android 14 (API 34)` —
+  기기 이름·id 는 넣지 않음), 앱 상태가 붙는다.
+- **가리기** — 미리 보기 전에 전부: 홈·프로젝트 경로(`~`, `<project>`), 프로젝트·앱 이름(`<project>`, `<app-id>`),
+  토큰·키(`ghp_…`, `sk-…`, JWT, `Bearer …`, `password=…`, `?token=`), URL 자격 증명, VM Service 인증 코드, 이메일.
+- **보내기** — `gh` 가 github.com 에 로그인돼 있으면 `gh issue create`, 아니면 미리 채운 GitHub 작성 화면을
+  브라우저로 열어 거기서 제출한다.
+- **스크린샷**은 GitHub API 로 올릴 방법이 없어 본문에 넣지 않는다. 이슈가 만들어진 뒤 코멘트에 붙여 넣는다:
+  CLI(macOS)는 이미지를 클립보드에 넣고 이슈를 열어 주고, 대시보드에는 **Copy image** 버튼이 있다.
+- 같은 리포트를 10분 안에 다시 보내면 새로 만들지 않고 앞서 만든 이슈를 알려 준다.
+- `--json` 은 묻지 않는다: `--dry-run` 으로 미리 보고 `--yes` / `--send <id>` 로 보낸다.
+- Claude Code 에서는 `emu:report` 스킬이 대화로 이 과정을 진행한다.
+
 ## 웹 대시보드
 
 `emu up` 이 `http://127.0.0.1:4577` 에 대시보드를 띄운다:

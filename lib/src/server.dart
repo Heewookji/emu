@@ -33,6 +33,8 @@ import 'pages.dart';
 import 'pages_api.dart';
 import 'probe.dart';
 import 'registry.dart';
+import 'report.dart';
+import 'report_api.dart';
 import 'session.dart';
 import 'settle.dart';
 import 'temp_device.dart';
@@ -187,6 +189,39 @@ class EmuServer {
 
   /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
   late final PagesApi pages;
+
+  /// `emu report` from the dashboard (`report_api.dart`).
+  late final ReportApi report = ReportApi(ReportSources(
+    from: 'dashboard',
+    scrubber: () => Scrubber.forProject(session.projectRoot.path, appIds: [
+      for (final platform in ['android', 'ios']) ?builtAppId(session.projectRoot.path, platform),
+    ]),
+    logs: () => logStore.query(limit: 1 << 20),
+    screenshot: () async {
+      final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      final out = '${session.stateDir.path}/report-shot-$ts.png';
+      await devices.screenshot(out, platform: _platform, udid: engine.status.deviceId);
+      return out;
+    },
+    session: _reportSession,
+  ));
+  ({String id, DeviceInfo? info})? _reportDevice;
+
+  /// The device's kind for a report's tail (`flutter devices` once per device).
+  Future<({String? device, String? appState})> _reportSession() async {
+    final id = engine.status.deviceId;
+    if (id != null && _reportDevice?.id != id) {
+      DeviceInfo? info;
+      try {
+        info = (await devices.listDevices()).where((d) => d.id == id).firstOrNull;
+      } catch (_) {}
+      _reportDevice = (id: id, info: info);
+    }
+    return (
+      device: id == null ? null : describeDevice(_reportDevice?.info, fallbackPlatform: platformForDeviceId(id)),
+      appState: engine.status.state.name,
+    );
+  }
 
   /// `emu mock`, when emu.yaml has `mocks:` (see `mock.dart`).
   MockServer? mock;
@@ -869,6 +904,7 @@ class EmuServer {
       default:
         if (path == '/api/mock' || path.startsWith('/api/mock/')) return _mockApi(req, path);
         if (path == '/api/pages' || path.startsWith('/api/pages/')) return pages.handle(req, path);
+        if (path == '/api/report' || path.startsWith('/api/report/')) return report.handle(req, path);
         return _json({'error': 'not found'}, status: 404);
     }
   }

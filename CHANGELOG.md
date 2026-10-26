@@ -28,6 +28,14 @@
   쓸 수 있다(텍스트에서는 펼치지 않음). `needs: checked` 는 0개일 때 버튼 비활성.
   `check: {column, toggle}` 로 도구가 체크 상태를 가질 수 있고, `rowActions[].bulk: true` 는 체크한 행마다
   차례로 돌리는 버튼을 목록 머리에 둔다. `emu run … --checked a,b,c`.
+- `emu report <bug|feature|question> "<제목>"` — emu 에 대한 버그·기능 요청·질문을 GitHub 이슈로(#50). 보낼 이슈 전체(제목·
+  라벨·본문·환경 정보)를 보여 주고 y 로 확인한 뒤에만 보낸다(`--yes`, `--dry-run` → `--send <id>`). 첨부는
+  `--attach logs[:N]|errors|shot|<파일>` 로 고른 것만. 경로·프로젝트/앱 이름·토큰은 미리 보기 전에 가린다. `gh` 가
+  로그인돼 있으면 `gh issue create`, 아니면 미리 채운 GitHub 작성 화면. 스크린샷은 이슈를 만든 뒤 코멘트에
+  붙여 넣게(클립보드 복사). `emu report --mine` — 내가 보낸 리포트와 상태.
+- 대시보드 **⚑ Report** 버튼·허브 서랍의 Report — 같은 기능의 모달(미리 본 그대로만 보냄, `My reports` 탭).
+  `/api/report/*`.
+- `emu:report` 스킬 — Claude Code 에서 대화로 리포트.
 
 ## [0.14.0] - 2026-10-23
 

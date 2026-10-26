@@ -162,6 +162,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu config [--profile <name>]` — `emu.yaml` 계층 병합 결과 + 학습된 메모리(`--profile`
   주면 그 profile로 미리보기).
 - `emu doctor` — 의존성 점검(flutter/adb/emulator/xcrun) + 업데이트 여부.
+- `emu report …` — emu 자체의 버그·불편·기능 요청을 GitHub 이슈로. 사용자가 원할 때만, `emu:report` 스킬의
+  절차(미리 보기 → 확인 → 전송)를 따른다. 앱의 버그는 여기로 보내지 않는다.
 - `emu --version`/`-v`, `emu update [-y]`, `emu uninstall [-y]` — 버전 확인,
   최신 릴리스로 업데이트, PATH 심링크 제거.
 

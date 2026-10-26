@@ -715,6 +715,38 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 A class that grows across repeated round-trips of something that should return
 to its starting state is the leak signal this is built to catch.
 
+### report — tell emu about a bug or an idea
+
+`emu report` files an issue on [github.com/HuanSuh/emu](https://github.com/HuanSuh/emu/issues) from where you
+are — the CLI, the dashboard's **⚑ Report** button, or the hub's drawer. It always shows the whole issue first
+and sends it only once you say so.
+
+```bash
+emu report bug "reload leaves the old screen" -m "1. edit … 2. r … 3. …" --attach logs --attach errors
+# → the title, label and the full body, exactly as it will be sent, then: Send this issue? [y/N]
+emu report feature "…" --body-file idea.md      # or -m; --body-file - reads stdin
+emu report question "…" --dry-run               # only show it; keeps a draft → emu report --send <id>
+emu report --mine                               # your reports and their status (open · fixing · fixed · closed)
+```
+
+- **Kind** — `bug` / `feature` / `question`, labelled `bug` / `enhancement` / `question` when the repo has
+  that label (and you may set it).
+- **Attachments** — none unless you ask: `--attach logs[:N]` (last N lines, default 200), `errors` (the last
+  exception banners), `shot` (the screen now), or a file (text goes in the body, images as screenshots).
+- **Environment** — every report ends with emu version and install, OS, Flutter/Dart, the device's kind
+  (`android · emulator · Android 14 (API 34)` — never its name or id) and the app state.
+- **Masked** in everything, before you see the preview: home and project paths (`~`, `<project>`), the
+  project's and app's names (`<project>`, `<app-id>`), tokens and keys (`ghp_…`, `sk-…`, JWTs, `Bearer …`,
+  `password=…`, `?token=`), URL credentials, the VM Service auth code, e-mail addresses.
+- **Sending** — with `gh` signed in to github.com: `gh issue create`. Without: the prefilled GitHub form
+  opens in the browser and you submit it there.
+- **Screenshots** can't be uploaded through any GitHub API, so they never go in the body. Once the issue is
+  open, paste them into a comment: the CLI (macOS) puts the image on the clipboard and opens the issue; the
+  dashboard has a **Copy image** button.
+- The same report sent again within 10 minutes points to the issue already made instead of a second one.
+- `--json` never prompts: use `--dry-run` to preview and `--yes` / `--send <id>` to send.
+- In Claude Code, the `emu:report` skill does this as a conversation.
+
 ## Web dashboard
 
 `emu up` serves a dashboard at `http://127.0.0.1:4577`:
