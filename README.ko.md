@@ -810,7 +810,7 @@ pages:
 | 블록 | 명령이 출력하는 것 | 보여 주는 것 |
 |------|--------------------|--------------|
 | `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다. 칸 머리를 누르면 그 칸으로 정렬(오름차순 → 내림차순 → 명령이 낸 순서, 숫자는 숫자로, `1.2.10` 같은 버전은 `1.2.9` 뒤로)하고, `sort: minVer:desc` 로 처음 순서를 정한다. 선택을 만드는 list 에서는 ↑·↓ 로 위아래 행을 고르고(따라오는 블록은 키를 멈춘 뒤 한 번만 불러온다), `/` 로 필터에 간다(↓ 나 Enter 로 돌아옴) |
-| `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
+| `diff` | unified diff — 아니면 줄 번호 붙은 텍스트로 | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼. `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}` 로 주면 처음엔 아무것도 고르지 않고 고른 버튼을 다시 누르면 꺼지며(`{{seg}}` 는 빈 값 — diff 대신 파일 자체를 보일 때), 고른 행의 `env` 와 같은 세그먼트는 보이지 않는다 |
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
 | `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
 | `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |

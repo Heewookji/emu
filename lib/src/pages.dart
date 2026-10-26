@@ -488,8 +488,9 @@ class ListBlock extends PageBlock {
       };
 }
 
-/// The unified diff [run] prints, rendered like the Changes tab. With
-/// [segments], a switch picks what to compare against: `{{seg}}`.
+/// The unified diff [run] prints, rendered like the Changes tab; output that
+/// isn't a diff shows as text. With [segments], a switch picks what to compare
+/// against: `{{seg}}`.
 class DiffBlock extends PageBlock {
   const DiffBlock({
     required super.id,
@@ -498,14 +499,27 @@ class DiffBlock extends PageBlock {
     required this.run,
     required this.title,
     this.segments = const [],
+    this.optional = false,
+    this.hide,
   });
 
   final PageCommand run;
   final String title;
   final List<String> segments;
 
+  /// `segments: {optional: true}`: none is picked at first and a click turns
+  /// the picked one off — `{{seg}}` is then empty.
+  final bool optional;
+
+  /// `segments: {hide: "{{selected.env}}"}`: the segment equal to this value,
+  /// filled from the picked row, isn't offered (a branch compared with itself).
+  final String? hide;
+
   @override
   PageCommand get command => run;
+
+  /// The placeholders [hide] reads, as in [PageCommand.placeholders].
+  Set<String> get _hidePlaceholders => {for (final m in _placeholder.allMatches(hide ?? '')) PageCommand._key(m)};
 
   @override
   Map<String, dynamic> toJson() => {
@@ -514,8 +528,11 @@ class DiffBlock extends PageBlock {
         'area': area,
         'title': title,
         'command': run.display,
-        'uses': run.placeholders.toList(),
+        // The picked row also decides which segments show.
+        'uses': {...run.placeholders, ..._hidePlaceholders}.toList(),
         'segments': segments,
+        if (optional) 'segmentsOptional': true,
+        'segmentsHide': ?hide,
         'watch': watch,
       };
 }
@@ -1001,14 +1018,24 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     return _parseHtml(m, id, area, watch, title, src, run, where, problems);
   }
   if (kind == 'diff') {
-    final segments = m['segments'] == null ? const <String>[] : _strings(m['segments']);
-    if (segments == null) {
-      problems.add('$where.segments: expected a list of names');
+    // `segments: [a, b]`, or `{values: [a, b], optional: true, hide: "{{selected.env}}"}`.
+    final raw = m['segments'];
+    final spec = raw is Map ? raw : null;
+    final segments = raw == null ? const <String>[] : _strings(spec != null ? spec['values'] : raw);
+    final optional = spec?['optional'] ?? false;
+    final hide = spec?['hide'];
+    if (segments == null ||
+        (spec != null && (segments.isEmpty || spec.keys.any((k) => !const {'values', 'optional', 'hide'}.contains(k)))) ||
+        optional is! bool ||
+        (hide != null && hide is! String)) {
+      problems.add('$where.segments: expected a list of names, or {values: [a, b], optional: true, hide: "{{selected.<col>}}"}');
       return null;
     }
+    if (hide is String && !_textPlaceholders(hide, '$where.segments.hide', const _Allowed(), problems)) return null;
     final run = _command(m['run'], '$where.run', _Allowed(seg: segments.isNotEmpty), problems);
     if (run == null) return null;
-    return DiffBlock(id: id, area: area, watch: watch, run: run, title: title, segments: segments);
+    return DiffBlock(
+        id: id, area: area, watch: watch, run: run, title: title, segments: segments, optional: optional, hide: hide as String?);
   }
   final run = _command(m['run'], '$where.run', _Allowed(selected: !makesSelection), problems);
   if (run == null) return null;

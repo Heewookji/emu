@@ -2177,7 +2177,11 @@ Future<int> _pagesCmd(List<String> args) async {
       print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
-      final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
+      final segList = b['segments'] as List? ?? const [];
+      final segs = segList.isEmpty
+          ? ''
+          : '   (vs ${segList.join('|')}${b['segmentsOptional'] == true ? ' or none' : ''}'
+              '${b['segmentsHide'] != null ? ', hides ${b['segmentsHide']}' : ''})';
       // A form with no fields is a button panel.
       final kind = b['kind'] == 'form' && (b['fields'] as List).isEmpty ? 'panel' : b['kind'];
       final check = b['check'] as Map?;
@@ -2669,7 +2673,8 @@ Future<int> _blockCmd(List<String> args) async {
       '   What a list, diff or html block of a dashboard page shows: the rows its\n'
       '   command prints as a table, its diff, or an html block\'s data. --select\n'
       '   fills {{selected.<col>}} the way picking a row in the dashboard does;\n'
-      '   --seg picks a diff\'s segment.';
+      '   --seg picks a diff\'s segment (left out: the first, or none when the\n'
+      '   segments are optional).';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final target = res.rest.length == 1 ? res.rest.first : '';

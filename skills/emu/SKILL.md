@@ -152,6 +152,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   README "API 목업" 참고.
 - `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
   보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
+  `--seg` 를 빼면 첫 세그먼트, `optional` 세그먼트면 비교 없음(빈 `{{seg}}`).
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).

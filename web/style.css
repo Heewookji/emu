@@ -377,7 +377,9 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .chip.bad { background: #f8514926; color: var(--error); }
 .chip.plain { background: #2f81f71f; color: #a5c8ff; }
 .count-hot { color: #e3b341; font-weight: 600; }
+.seg-pick { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.seg[hidden] { display: none; }
 .seg button { border: none; border-radius: 0; padding: 2px 9px; font-size: 11px; background: none; color: var(--muted); }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--accent); color: #fff; }

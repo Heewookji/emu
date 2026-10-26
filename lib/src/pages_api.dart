@@ -535,9 +535,13 @@ class PagesApi {
     final kind = switch (block) { ListBlock() => 'list', DiffBlock() => 'diff', _ => 'html' };
     if (block.command == null) return {'ok': true, 'kind': kind, 'data': null}; // an html block without run
     if (block is DiffBlock && block.segments.isNotEmpty) {
-      final seg = vars['seg'] ??= block.segments.first;
-      if (!block.segments.contains(seg)) {
-        return {'ok': false, 'error': 'seg must be one of ${block.segments.join(', ')} (got "$seg")'};
+      // An optional segment may be none: {{seg}} is then empty.
+      final seg = vars['seg'] ??= block.optional ? '' : block.segments.first;
+      if (!block.segments.contains(seg) && !(block.optional && seg.isEmpty)) {
+        return {
+          'ok': false,
+          'error': 'seg must be one of ${block.segments.join(', ')}${block.optional ? ', or empty for none' : ''} (got "$seg")',
+        };
       }
     }
     final PageCommand command;

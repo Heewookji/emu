@@ -885,17 +885,32 @@ function renderChecksHead(page, block, el) {
   });
 }
 
-// diff: the unified diff its command prints, drawn like the Changes tab.
+// diff: the unified diff its command prints, drawn like the Changes tab;
+// output that isn't a diff (a file shown as it is) is drawn as numbered lines.
+// Segments pick what it compares against ({{seg}}). With `optional:` none is
+// picked at first and a click on the picked one turns it off — {{seg}} is
+// then empty; `hide:` leaves out the segment equal to that value of the
+// picked row. A segment out of view counts as off (or the first shown, when
+// one must be picked); the choice itself is kept.
+function shownSegments(page, block) {
+  if (!block.segmentsHide) return block.segments;
+  const sel = selectedRow(page);
+  const hidden = block.segmentsHide.replace(/\{\{\s*selected\.([A-Za-z0-9_-]+)\s*\}\}/g, (_, col) => (sel ? cellText(sel[col]) : ''));
+  return block.segments.filter(s => s !== hidden);
+}
+
 function segOf(page, block) {
+  const shown = shownSegments(page, block);
   const s = pageState.seg[blockKey(page, block)];
-  return block.segments.includes(s) ? s : block.segments[0];
+  if (shown.includes(s)) return s;
+  return block.segmentsOptional ? '' : shown[0] ?? block.segments[0];
 }
 
 function initDiff(page, block, el) {
   el.innerHTML = `<div class="blk-head"><span class="name" data-title>${escapeHtml(block.title)}</span>`
     + `<span class="plus" data-plus></span><span class="minus" data-minus></span>`
     + `<span class="cmd" data-cmd title="${escapeHtml(block.command)}"></span>`
-    + (block.segments.length ? `<span class="meta muted">vs</span><span class="seg" data-seg></span>` : '')
+    + (block.segments.length ? `<span class="seg-pick"><span class="muted" data-vs>vs</span><span class="seg" data-seg></span></span>` : '')
     + '</div><section class="diff-view" data-diff></section>';
   renderSegments(page, block, el);
 }
@@ -904,10 +919,15 @@ function renderSegments(page, block, el) {
   const host = el.querySelector('[data-seg]');
   if (!host) return;
   const cur = segOf(page, block);
-  host.innerHTML = block.segments.map(s => `<button class="${s === cur ? 'on' : ''}" data-s="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('');
+  const shown = shownSegments(page, block);
+  host.hidden = !shown.length;
+  el.querySelector('[data-vs]').hidden = !cur || !shown.length; // nothing to compare against: the output as it is
+  host.innerHTML = shown.map(s => `<button class="${s === cur ? 'on' : ''}" data-s="${escapeHtml(s)}"`
+    + `${block.segmentsOptional && s === cur ? ' title="click again to compare with nothing"' : ''}>${escapeHtml(s)}</button>`).join('');
   host.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
-      pageState.seg[blockKey(page, block)] = b.dataset.s;
+      const off = block.segmentsOptional && b.dataset.s === segOf(page, block);
+      pageState.seg[blockKey(page, block)] = off ? '' : b.dataset.s;
       savePagePrefs();
       renderSegments(page, block, el);
       loadBlock(page, block);
@@ -921,6 +941,7 @@ function renderDiffView(page, block) {
   const entry = pageState.data[blockKey(page, block)];
   const r = entry?.result;
   el.classList.toggle('loading', !!entry?.loading);
+  renderSegments(page, block, el); // the picked row may hide one
   const sel = usesSelection(block) ? selectedRow(page) : null;
   const list = selectionList(page);
   el.querySelector('[data-title]').textContent = sel && list ? `${block.title} · ${rowKeyOf(list, sel)}` : block.title;
@@ -931,13 +952,20 @@ function renderDiffView(page, block) {
     view.innerHTML = blockNote(page, block, entry);
     return;
   }
-  const files = splitPatch(r.patch || '');
+  const patch = r.patch || '';
+  const files = splitPatch(patch);
   const added = files.reduce((n, f) => n + f.added, 0), deleted = files.reduce((n, f) => n + f.deleted, 0);
   el.querySelector('[data-plus]').textContent = files.length ? `+${added}` : '';
   el.querySelector('[data-minus]').textContent = files.length ? `−${deleted}` : '';
   const top = view.scrollTop;
-  view.innerHTML = patchFilesHtml(files);
+  view.innerHTML = files.length || !patch.trim() ? patchFilesHtml(files) : textLinesHtml(patch);
   view.scrollTop = top; // a refresh of the same diff keeps the reader's place
+}
+
+// Output with no hunk in it: its lines, numbered.
+function textLinesHtml(text) {
+  return text.replace(/\n$/, '').split('\n')
+    .map((line, i) => `<div class="dl"><span class="ln">${i + 1}</span><span class="code">${escapeHtml(line) || ' '}</span></div>`).join('');
 }
 
 function patchFilesHtml(files) {

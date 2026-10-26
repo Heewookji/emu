@@ -215,6 +215,36 @@ void main() {
       ]);
     });
 
+    test('segments as a map: optional, and the one to hide for the picked row', () {
+      final c = parse([
+        {'list': {'id': 'files', 'run': ['./tool/t']}},
+        {
+          'diff': {
+            'id': 'content',
+            'run': ['./tool/t', 'diff', '{{selected.path}}', '--against', '{{seg}}'],
+            'segments': {'values': ['prod', 'stage'], 'optional': true, 'hide': '{{selected.env}}'},
+          },
+        },
+        {'diff': {'id': 'plain', 'run': ['./tool/t', '{{seg}}'], 'segments': {'values': ['a']}}},
+        {'diff': {'id': 'empty', 'run': ['./tool/t'], 'segments': {'values': <String>[]}}},
+        {'diff': {'id': 'extra', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'default': 'a'}}},
+        {'diff': {'id': 'flag', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'optional': 'yes'}}},
+        {'diff': {'id': 'row', 'run': ['./tool/t'], 'segments': {'values': ['a'], 'hide': '{{row.env}}'}}},
+      ]);
+      final page = c.page('p')!;
+      final json = (page.block('content') as DiffBlock).toJson();
+      expect(json['segments'], ['prod', 'stage']);
+      expect(json['segmentsOptional'], isTrue);
+      expect(json['segmentsHide'], '{{selected.env}}');
+      expect(json['uses'], containsAll(['selected.path', 'seg', 'selected.env'])); // the pick decides what shows
+      expect((page.block('plain') as DiffBlock).toJson().keys, isNot(contains('segmentsOptional')));
+      expect(c.problems, [
+        for (final id in ['empty', 'extra', 'flag'])
+          'p.$id.segments: expected a list of names, or {values: [a, b], optional: true, hide: "{{selected.<col>}}"}',
+        "p.row.segments.hide: {{row.*}} only works in a list's rowActions",
+      ]);
+    });
+
     test('fill puts each value inside its own argument', () {
       const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
       final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});
