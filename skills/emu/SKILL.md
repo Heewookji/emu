@@ -142,7 +142,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   `auto:` 가 켜진 액션은 감시 파일이 바뀌면 서버가 스스로 실행한다(`emu pages` 에 `runs on change of …: on`) —
   그 파일을 고친 뒤 같은 액션을 또 `emu run` 할 필요가 없다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
-  form·panel(입력 칸 없는 form) 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움). `--checked <key>,…` 는 `check: true` list 의
+  form·panel(입력 칸 없는 form) 의 버튼, html 블록 자신의 액션을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+  html 블록(커스텀 화면) 파일은 `window.emu` 로 대시보드와 주고받는다: `onData`·`run(id, {input, confirm})`·
+  `confirm`·`prompt`·`choose`·`select(key)`·`refresh(blockId?)`·`toast` — 표와 규칙은 README 의 html 블록 절. `--checked <key>,…` 는 `check: true` list 의
   체크한 행(`{{checked.<col>...}}`·`{{checked.count}}`, list 가 여럿이면 `--checked <list>=<key>,…`).
   `check.toggle` 이 있는 list 는 `emu run <page>.<list>.check --row <col>=<value>` 로 체크를 바꾼다.
 - `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의

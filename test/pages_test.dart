@@ -678,7 +678,12 @@ void main() {
     final view = c.page('deploy')!.block('view') as HtmlBlock;
     expect(view.inputs, ['env', 'message']);
     expect(view.actions, ['sync']);
-    expect(view.blockActions.map((a) => a.id), ['plan', 'deploy']);
-    expect(view.action('deploy')!.confirm, isNotNull);
+    expect(view.blockActions.map((a) => a.id), ['plan', 'deploy', 'rollback']);
+    final deploy = view.action('deploy')!.confirm!;
+    expect(deploy.danger, isTrue);
+    expect(deploy.placeholders, {'input.env'}); // the dialog names the branch the view chose
+    expect(view.action('rollback')!.confirm, isNotNull);
+    // emu.select picks rows of the page's list.
+    expect(c.page('deploy')!.selectionList!.id, 'templates');
   });
 }

@@ -147,7 +147,12 @@ function select(page, list, row, { soon = false } = {}) {
   renderListRows(page, list);
   renderPageBar(page);
   // Everything that reads {{selected.*}} follows the pick.
-  const follow = () => loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+  // A frame that isn't fetched again still hears of the pick (onData's
+  // selected) — at the same moment the fetched ones do.
+  const follow = () => {
+    loadBlocks(page, page.blocks.filter(b => b.id !== list.id && usesSelection(b)));
+    for (const b of page.blocks) if (b.kind === 'html' && !usesSelection(b)) postFrameData(page, b);
+  };
   clearTimeout(followTimers[page.id]);
   if (soon) followTimers[page.id] = setTimeout(follow, 200);
   else follow();
@@ -362,9 +367,10 @@ async function refreshToggles(page) {
 // the exact command (values filled in), the dialog's words and the preview
 // output; that is what the dialog shows. [frame] is the html block that asked
 // for the run, if one did: its dialog says so, and falls under that frame's
-// limits (frameDialog). [quiet]: no toast when it succeeds. Resolves to the
-// run's answer, or {ok: false, error, busy | cancelled} when it didn't run.
-async function runItem(page, item, key, url, body, { frame = null, quiet = false } = {}) {
+// limits (frameDialog); [ask]: its words for this run (withAsk). [quiet]: no
+// toast when it succeeds. Resolves to the run's answer, or {ok: false, error,
+// busy | cancelled} when it didn't run.
+async function runItem(page, item, key, url, body, { frame = null, ask = null, quiet = false } = {}) {
   if (pageState.running.has(key)) return { ok: false, busy: true, error: `${item.label} is already running` };
   pageState.running.add(key);
   renderRunning(page);
@@ -376,7 +382,9 @@ async function runItem(page, item, key, url, body, { frame = null, quiet = false
       pageState.running.delete(key);
       renderRunning(page);
       const opts = confirmOpts(item, j);
-      const answer = frame ? await frameDialog(page, frame, { ...opts, verb: 'wants to run this' }) : await confirmRun(opts);
+      const answer = !frame ? await confirmRun(opts)
+        : ask ? await frameDialog(page, frame, { ...withAsk(opts, ask), verb: 'asks' })
+          : await frameDialog(page, frame, { ...opts, verb: 'wants to run this' });
       if (!answer.ok) return { ok: false, cancelled: true, busy: !!answer.busy, error: refusalText(answer) };
       pageState.running.add(key);
       renderRunning(page);
@@ -1142,10 +1150,15 @@ function splitPatch(patch) {
 // In front of the file goes a small helper, window.emu (frameHelper), so a
 // custom view needn't speak postMessage itself:
 //   frame → dashboard                     dashboard → frame
-//   emu:run {reqId, id, input}            emu:result {reqId, ok, exitCode, error, output, data}
+//   emu:run {reqId, id, input, confirm?}  emu:result {reqId, ok, exitCode, error, output, data}
 //   emu:confirm {reqId, title, message, detail, danger, button}   emu:result {reqId, value: bool}
 //   emu:prompt {reqId, title, message, fields: [{name, label, default}]}  emu:result {reqId, value: {…} | null}
+//   emu:choose {reqId, title, message, options: [{value, label}], multiple}  emu:result {reqId, value | null}
+//   emu:select {reqId, key}  ·  emu:refresh {reqId, block?}             emu:result {reqId, ok, error?}
 //   emu:toast {text, level}  ·  emu:ready  ·  emu:action {id} (emu:run without a reply)
+// run's confirm: the view's own words ({title, message, detail, danger,
+// button}) for the dialog of that run — one dialog, not emu.confirm and then
+// the run's own.
 const FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
   + "img-src data: blob:; font-src data:; form-action 'none'";
 
@@ -1193,9 +1206,19 @@ function frameHelper() {
       if (last) fn(last);
       return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
     },
-    run: (id, opts = {}) => ask('emu:run', { id: String(id), input: opts.input || {} }),
+    run: (id, opts = {}) => ask('emu:run', {
+      id: String(id),
+      input: opts.input || {},
+      ...(opts.confirm ? { confirm: typeof opts.confirm === 'string' ? { title: opts.confirm } : opts.confirm } : {}),
+    }),
     confirm: (opts = {}) => ask('emu:confirm', typeof opts === 'string' ? { title: opts } : opts).then((r) => r.value === true),
     prompt: (opts = {}) => ask('emu:prompt', opts).then((r) => r.value ?? null),
+    // {title, message?, options: [{value, label} | 'value'], multiple?} → the value (multiple: an array), or null.
+    choose: (opts = {}) => ask('emu:choose', opts).then((r) => r.value ?? null),
+    // Pick the page's row with this key, as a click would → {ok, error?}.
+    select: (key) => ask('emu:select', { key }),
+    // Fetch this block's data again (onData gets it), or another block's on the page → {ok, error?}.
+    refresh: (block) => ask('emu:refresh', block === undefined ? {} : { block: String(block) }),
     toast: (text, level = 'info') => send({ type: 'emu:toast', text: String(text), level }),
   };
   Object.defineProperty(window, 'emu', { value: Object.freeze(emu) });
@@ -1264,18 +1287,32 @@ window.addEventListener('message', async (e) => {
   const block = page && !pageEls.body.hidden
     && page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe') === frame);
   if (!block) { reply({ ok: false, value: null, error: 'this view is not on screen' }); return; }
+  // A held confirm waits for its view's run only (frameRun); anything else lets it go.
+  if (msg.type !== 'emu:run' && msg.type !== 'emu:action') endHold();
   switch (msg.type) {
     case 'emu:ready': postFrameData(page, block); break;
     case 'emu:action': frameRun(page, block, msg.id); break; // the older form: no reply
-    case 'emu:run': reply(await frameRun(page, block, msg.id, msg.input)); break;
+    case 'emu:run': reply(await frameRun(page, block, msg.id, msg.input, msg.confirm)); break;
     case 'emu:confirm': {
-      const a = await frameDialog(page, block, {
-        verb: 'asks', title: clip(msg.title, 200) || 'Confirm?', message: clip(msg.message, 2000),
-        detail: clip(msg.detail, 20000), danger: msg.danger === true, button: clip(msg.button, 40) || 'OK',
-      });
+      const ask = frameAsk(msg);
+      const a = await frameDialog(page, block, { verb: 'asks', ...ask, keep: { key: blockKey(page, block), ask } });
       reply({ value: a.ok === true, ...(a.ok ? {} : { error: refusalText(a) }) });
       break;
     }
+    case 'emu:choose': {
+      const options = frameOptions(msg.options);
+      if (!options.length) { reply({ value: null, error: 'choose needs options: [{value, label?}]' }); break; }
+      const multiple = msg.multiple === true;
+      const a = await frameDialog(page, block, {
+        verb: 'asks', title: clip(msg.title, 200) || 'Choose', message: clip(msg.message, 2000),
+        choices: { options, multiple }, button: clip(msg.button, 40) || 'OK',
+      });
+      const picked = a.ok ? a.picked.map(i => options[i].value) : null;
+      reply({ value: picked && (multiple ? picked : picked[0] ?? null), ...(a.ok ? {} : { error: refusalText(a) }) });
+      break;
+    }
+    case 'emu:select': reply(frameSelect(page, msg.key)); break;
+    case 'emu:refresh': reply(frameRefresh(page, block, msg.block)); break;
     case 'emu:prompt': {
       const seen = new Set();
       const fields = (Array.isArray(msg.fields) ? msg.fields : []).slice(0, 12)
@@ -1300,21 +1337,83 @@ function clip(v, n) {
   return v === undefined || v === null ? '' : String(v).slice(0, n);
 }
 
-// emu.run(id, {input}): the block's own action, or a toolbar action it lists.
-// Only names in the block's inputs: go along.
-async function frameRun(page, block, id, input) {
+// A view's words for a dialog (emu.confirm, run's confirm), as text.
+function frameAsk(m) {
+  return {
+    title: clip(m.title, 200) || 'Confirm?', message: clip(m.message, 2000), detail: clip(m.detail, 20000),
+    danger: m.danger === true, button: clip(m.button, 40) || 'OK',
+  };
+}
+
+// emu.choose's options: {value, label?} or a bare value; a value is a string,
+// number or boolean, and given once.
+function frameOptions(options) {
+  const seen = new Set();
+  return (Array.isArray(options) ? options : []).slice(0, 200)
+    .map(o => (o !== null && typeof o === 'object' ? o : { value: o }))
+    .filter(o => ['string', 'number', 'boolean'].includes(typeof o.value) && !seen.has(JSON.stringify(o.value)) && seen.add(JSON.stringify(o.value)))
+    .map(o => ({ value: o.value, label: clip(o.label ?? o.value, 200) }));
+}
+
+// emu.select(key): the page's selection list picks that row, as a click would.
+function frameSelect(page, key) {
+  const list = selectionList(page);
+  if (!list) return { ok: false, error: 'this page has no selection list (selection:)' };
+  const rows = pageState.data[blockKey(page, list)]?.result?.rows || [];
+  const row = (typeof key === 'string' || typeof key === 'number') ? rows.find(r => rowKeyOf(list, r) === String(key)) : null;
+  if (!row) return { ok: false, error: `no row "${clip(key, 60)}" in ${list.title}` };
+  select(page, list, row);
+  return { ok: true };
+}
+
+// emu.refresh(blockId?): fetch a block of this page again — the asking one if
+// none is named. Not while it loads, nor twice in a second (a view that
+// refreshes from onData would otherwise run its command in a loop).
+const frameRefreshed = {}; // 'page.block' → when a frame last had it fetched
+function frameRefresh(page, block, id) {
+  const target = id === undefined || id === null ? block : page.blocks.find(b => b.id === id);
+  if (!target || target.kind === 'output' || target.kind === 'form') {
+    return { ok: false, error: `no block "${clip(id, 60)}" with data on this page` };
+  }
+  const key = blockKey(page, target);
+  const now = Date.now();
+  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < 1000) {
+    return { ok: false, busy: true, error: `${target.title || target.id} is already loading` };
+  }
+  frameRefreshed[key] = now;
+  loadBlocks(page, [target]);
+  return { ok: true };
+}
+
+// emu.run(id, {input, confirm}): the block's own action, or a toolbar action
+// it lists. Only names in the block's inputs: go along. [confirm]: the view's
+// words for the run — with the dialog of a `confirm:` action, or alone before
+// one without. A `confirm:` action run right after the view's own emu.confirm
+// goes on in that dialog (takeHold).
+async function frameRun(page, block, id, input, confirm) {
   const own = block.blockActions.find(a => a.id === id);
   const item = own || (block.actions.includes(id) ? page.toolbar.find(i => i.kind === 'action' && i.id === id) : null);
+  const key = blockKey(page, block);
+  let ask = confirm && typeof confirm === 'object' ? frameAsk(confirm) : null;
+  const held = item?.confirm && !ask ? takeHold(key) : null;
+  if (!held) endHold();
   if (!item) {
     toast(`${block.title}: action "${clip(id, 60)}" is not allowed`);
     return { ok: false, error: `action "${clip(id, 60)}" is not allowed — list it under the block's actions:` };
   }
+  if (ask && !item.confirm) {
+    const a = await frameDialog(page, block, { verb: 'asks', ...ask });
+    if (!a.ok) return { ok: false, cancelled: true, ...(a.busy ? { busy: true } : {}), exitCode: null, error: refusalText(a), output: '', data: null };
+    ask = null;
+  }
   const pid = encodeURIComponent(page.id);
+  const opts = { frame: block, ask: ask || held };
   const j = own
     ? await runItem(page, own, `${page.id}.${block.id}.${own.id}`,
       `/api/pages/${pid}/frames/${encodeURIComponent(block.id)}/${encodeURIComponent(own.id)}`,
-      { ...runValues(page), input: frameInput(block, input) }, { frame: block })
-    : await runItem(page, item, itemKey(page, item), `/api/pages/${pid}/run/${encodeURIComponent(item.id)}`, runValues(page), { frame: block });
+      { ...runValues(page), input: frameInput(block, input) }, opts)
+    : await runItem(page, item, itemKey(page, item), `/api/pages/${pid}/run/${encodeURIComponent(item.id)}`, runValues(page), opts);
+  if (held) endHold(true); // it ended without a dialog (refused, failed): let the held one go
   return {
     ok: !!j.ok,
     exitCode: j.exitCode ?? null,
@@ -1451,20 +1550,28 @@ function renderHistory(el, hist, viewing, live) {
 // ---- dialogs -----------------------------------------------------------------
 // One dialog at a time, drawn here — outside every frame, where a frame can't
 // read or press it: the confirmation of a `confirm:` run, and what a custom
-// view asks (emu.confirm, emu.prompt). Every text goes in as text, never as
-// HTML. A run's words come from emu.yaml (`confirm:`); the command it runs is
-// always there, folded under them. A danger dialog keeps focus on Cancel, so
-// Enter alone doesn't press Run; a failed preview disables Run unless the
-// action allows it.
+// view asks (emu.confirm, emu.prompt, emu.choose). Every text goes in as text,
+// never as HTML. A run's words come from emu.yaml (`confirm:`); the command it
+// runs is always there, folded under them. When a view explains the run it
+// asks for, its words lead and emu.yaml's follow under [action]. A danger
+// dialog keeps focus on Cancel, so Enter alone doesn't press Run; a failed
+// preview disables Run unless the action allows it.
 
-const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'cancel', 'run']
+const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'choices', 'action', 'action-title', 'action-msg',
+  'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
   .map(k => [k, document.getElementById(`confirm-${k}`)]));
 let dialogResolve = null;
-const dialogOpen = () => dialogResolve !== null;
+let dialogKeep = null; // openDialog's [keep]: what to hold on to if OK is pressed
+let dialogHold = null; // {key, ask, timer}: a view's confirm, just answered OK, still on screen (holdDialog)
+const dialogOpen = () => dialogResolve !== null || dialogHold !== null;
 
-// Resolves to {ok, values?} — values: the fields as typed — or {ok: false, block: true}.
-function openDialog({ from = '', title, message = '', detail = '', fields = [], preview = null, command = '', then = '', button = 'OK', danger = false, offerBlock = false }) {
+// Resolves to {ok, values?, picked?} — values: the fields as typed, picked: the
+// indexes of the chosen [choices] — or {ok: false, block: true}. [keep]: on OK
+// the dialog stays up for a moment (holdDialog).
+function openDialog({ from = '', title, message = '', detail = '', fields = [], choices = null, action = null, preview = null, command = '', then = '', button = 'OK', danger = false, offerBlock = false, keep = null }) {
   const show = (el, text) => { el.textContent = text; el.hidden = !text; };
+  if (dialogHold) { clearTimeout(dialogHold.timer); dialogHold = null; } // a held dialog goes on as this one
+  dialogKeep = keep;
   pageEls.confirm.classList.toggle('danger', danger);
   pageEls.confirm.classList.toggle('wide', !!preview);
   show(dlg.from, from);
@@ -1483,19 +1590,42 @@ function openDialog({ from = '', title, message = '', detail = '', fields = [], 
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !danger) dlg.run.click(); });
     dlg.fields.append(label, input);
   }
+  renderChoices(choices, danger);
+  dlg.action.hidden = !action;
+  if (action) { dlg['action-title'].textContent = action.title; show(dlg['action-msg'], action.message); }
   renderConfirmPreview(preview);
   dlg.command.hidden = !command;
   dlg.cmd.textContent = dlg['cmd-line'].textContent = command ? `$ ${command}` : '';
   // Nothing else to read: show the command unfolded.
-  dlg['cmd-box'].open = !message && !preview;
+  dlg['cmd-box'].open = !message && !preview && !action;
   dlg.then.textContent = then;
   dlg.run.textContent = button;
-  dlg.run.disabled = !!preview?.blocks;
+  dlg.run.disabled = !!preview?.blocks || (!!choices && !choices.multiple);
   dlg.run.title = preview?.blocks ? 'the preview failed' : '';
+  dlg.cancel.disabled = false;
+  dlg.wait.hidden = true;
   dlg.block.hidden = !offerBlock;
   pageEls.confirm.hidden = pageEls.confirmDim.hidden = false;
-  (fields.length ? dlg.fields.querySelector('input') : danger || dlg.run.disabled ? dlg.cancel : dlg.run).focus();
+  (fields.length ? dlg.fields.querySelector('input') : choices ? dlg.choices.querySelector('input')
+    : danger || dlg.run.disabled ? dlg.cancel : dlg.run).focus();
   return new Promise((resolve) => { dialogResolve = resolve; });
+}
+
+// emu.choose: one radio (OK waits for a pick) or a checkbox per option.
+function renderChoices(choices, danger) {
+  dlg.choices.replaceChildren();
+  dlg.choices.hidden = !choices;
+  if (!choices) return;
+  for (const [i, o] of choices.options.entries()) {
+    const input = Object.assign(document.createElement('input'), {
+      type: choices.multiple ? 'checkbox' : 'radio', name: 'confirm-choice', value: String(i),
+    });
+    input.addEventListener('change', () => { if (!choices.multiple) dlg.run.disabled = false; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !danger && !dlg.run.disabled) dlg.run.click(); });
+    const label = document.createElement('label');
+    label.append(input, Object.assign(document.createElement('span'), { textContent: o.label }));
+    dlg.choices.append(label);
+  }
 }
 
 // A preview's output: a diff like the Changes tab, JSON rows as a table, or text.
@@ -1523,14 +1653,19 @@ function renderConfirmPreview(pv) {
 }
 
 function closeDialog(answer) {
-  pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;
+  if (!dialogResolve) { endHold(true); return; } // Esc or a click outside a held dialog
   const resolve = dialogResolve;
   dialogResolve = null;
-  resolve?.(answer);
+  if (answer.ok && dialogKeep) holdDialog(dialogKeep);
+  else hideDialog();
+  dialogKeep = null;
+  resolve(answer);
 }
+function hideDialog() { pageEls.confirm.hidden = pageEls.confirmDim.hidden = true; }
 dlg.run.onclick = () => closeDialog({
   ok: true,
   values: Object.fromEntries([...dlg.fields.querySelectorAll('input')].map(i => [i.dataset.name, i.value])),
+  picked: [...dlg.choices.querySelectorAll('input:checked')].map(i => Number(i.value)),
 });
 dlg.cancel.onclick = () => closeDialog({ ok: false });
 dlg.block.onclick = () => closeDialog({ ok: false, block: true });
@@ -1555,9 +1690,53 @@ function confirmRun(opts) {
   return dialogOpen() ? Promise.resolve({ ok: false, busy: true }) : openDialog(opts);
 }
 
+// A run's dialog with the words of the view that asked for it: the view's
+// lead (under its "from" line), emu.yaml's follow with the command.
+function withAsk(opts, ask) {
+  return {
+    ...opts,
+    title: ask.title, message: ask.message, detail: ask.detail,
+    action: { title: opts.title, message: opts.message },
+    danger: opts.danger || ask.danger,
+  };
+}
+
+// Merging a view's confirm with the run it asks for next. emu.confirm can't
+// know that run — the view sends it only once it has the answer — so on OK the
+// dialog stays up, inert, for FRAME_MERGE_MS. If the same view runs a
+// `confirm:` action in that time, the dialog goes on to that run's command in
+// place (takeHold): one window, its words still on top. Anything else, or
+// nothing, lets it go, and a later run asks in a dialog of its own.
+const FRAME_MERGE_MS = 1000;
+
+function holdDialog(keep) {
+  dialogHold = { ...keep, timer: setTimeout(endHold, FRAME_MERGE_MS) };
+  dlg.run.disabled = dlg.cancel.disabled = true;
+  dlg.block.hidden = true;
+  dlg.wait.hidden = false;
+}
+
+// [key]'s run needs a confirmation: the held dialog waits for its 428 (the
+// next openDialog takes it over). Returns the view's words, or null.
+function takeHold(key) {
+  if (dialogHold?.key !== key || !dialogHold.timer) return null;
+  clearTimeout(dialogHold.timer);
+  dialogHold.timer = null;
+  return dialogHold.ask;
+}
+
+// Let a held dialog go — only one still waiting for a run ([claimed]: or one
+// whose run has been taken, once that run is done without a dialog).
+function endHold(claimed = false) {
+  if (!dialogHold || (!dialogHold.timer && !claimed)) return;
+  clearTimeout(dialogHold.timer);
+  dialogHold = null;
+  if (!dialogResolve) hideDialog();
+}
+
 // Limits on what frames ask for. A frame whose dialogs keep getting cancelled
 // is offered a way out: block it, and until the dashboard reloads its
-// confirm/prompt answer no (false/null) at once — runs that need a
+// confirm/prompt/choose answer no (false/null) at once — runs that need a
 // confirmation included.
 const frameGuard = { blocked: new Set(), cancels: {} }; // 'page.block' → times of recent cancels
 const FRAME_SPAM_MS = 20000;
@@ -1567,7 +1746,8 @@ const FRAME_SPAM_CANCELS = 2;
 async function frameDialog(page, block, { verb, ...opts }) {
   const key = blockKey(page, block);
   if (frameGuard.blocked.has(key)) return { ok: false, blocked: true };
-  if (dialogOpen()) return { ok: false, busy: true };
+  const held = dialogHold?.key === key && !dialogHold.timer; // its run, taken over by takeHold
+  if (dialogOpen() && !held) return { ok: false, busy: true };
   if (currentPage() !== page || document.visibilityState !== 'visible') return { ok: false, hidden: true };
   const now = Date.now();
   const recent = (frameGuard.cancels[key] || []).filter(t => now - t < FRAME_SPAM_MS);
