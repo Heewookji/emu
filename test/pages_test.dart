@@ -152,6 +152,34 @@ void main() {
       expect(page.toJson()['selection'], 'items');
     });
 
+    test('a text column may take a width and cut its start; chips and counts take neither', () {
+      final c = parse([
+        {
+          'list': {
+            'id': 'items',
+            'run': ['./tool/t', 'list'],
+            'columns': ['path:text:40em:start', 'title:text:18ch', 'file:start', 'note:320px', 'name', 'on:chip'],
+          },
+        },
+        {'list': {'id': 'chip', 'run': ['./tool/t'], 'columns': ['on:chip:10em']}},
+        {'list': {'id': 'unit', 'run': ['./tool/t'], 'columns': ['path:text:40']}},
+        {'list': {'id': 'twice', 'run': ['./tool/t'], 'columns': ['path:start:start']}},
+      ]);
+      final list = c.page('p')!.block('items') as ListBlock;
+      expect([for (final col in list.columns) col.toJson()], [
+        {'key': 'path', 'format': 'text', 'width': '40em', 'clip': 'start'},
+        {'key': 'title', 'format': 'text', 'width': '18ch'},
+        {'key': 'file', 'format': 'text', 'clip': 'start'},
+        {'key': 'note', 'format': 'text', 'width': '320px'},
+        {'key': 'name', 'format': 'text'},
+        {'key': 'on', 'format': 'chip'},
+      ]);
+      expect(c.problems, [
+        for (final (id, spec) in [('chip', 'on:chip:10em'), ('unit', 'path:text:40'), ('twice', 'path:start:start')])
+          startsWith('p.$id.columns: "$spec" should be name or name:text|chip|count'),
+      ]);
+    });
+
     test('fill puts each value inside its own argument', () {
       const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
       final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});

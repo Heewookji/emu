@@ -333,10 +333,15 @@ body.resizing iframe { pointer-events: none; }
 .blk-scroll { flex: 1; overflow: auto; min-height: 0; }
 table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .lst th {
-  position: sticky; top: 0; background: var(--bg); text-align: left; color: var(--muted); font-weight: 500;
+  position: sticky; top: 0; z-index: 2; background: var(--bg); text-align: left; color: var(--muted); font-weight: 500;
   padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 11px; white-space: nowrap;
 }
 .lst td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* A long text value is cut at its column's width (`name:text:40em`); hovering shows it whole. */
+.lst .cell { display: block; max-width: 32em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `:start` cuts the front instead: rtl moves the ellipsis to the left, the inner span keeps the text ltr. */
+.lst .cell.clip-start { direction: rtl; text-align: left; }
+.lst .cell.clip-start > span { direction: ltr; unicode-bidi: embed; }
 .lst tr.pick { cursor: pointer; }
 .lst tr.pick:hover td { background: var(--bg-row-alt); }
 .lst tr.sel td { background: #1c2430; }
@@ -346,7 +351,10 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .blk-head .checks { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
 .blk-head .checks + .count { margin-left: 0; }
 .blk-head .checks button { padding: 2px 8px; font-size: 11px; }
-.lst .row-actions { text-align: right; }
+/* Row buttons stay in view when a wide table scrolls sideways. */
+.lst .row-actions { text-align: right; position: sticky; right: 0; background: var(--bg); box-shadow: inset 1px 0 0 var(--border); }
+.lst td.row-actions { z-index: 1; }
+.lst th.row-actions { z-index: 3; }
 .lst .row-actions button { padding: 2px 8px; font-size: 11px; }
 .lst .row-actions button + button { margin-left: 4px; }
 .chip { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; }

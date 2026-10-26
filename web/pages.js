@@ -544,6 +544,11 @@ function initList(page, block, el) {
   const search = el.querySelector('.blk-search');
   search.value = pageState.search[key] || '';
   search.addEventListener('input', () => { pageState.search[key] = search.value; renderListRows(page, block); });
+  // A value cut with an ellipsis shows whole on hover.
+  el.querySelector('[data-rows]').addEventListener('mouseover', (e) => {
+    const cell = e.target.closest?.('.cell');
+    if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent;
+  });
 }
 
 function listColumns(block, rows) {
@@ -564,17 +569,23 @@ const CHIP_KINDS = [
   ['bad', /^(error|failed|fail|invalid|missing|broken)$/i],
 ];
 
-function cellHtml(v, format) {
-  if (format === 'chip') {
+// A text value longer than its column's width (col.width, else 32em) is cut
+// with an ellipsis — at its start for `:start`, so a path keeps its end.
+function cellHtml(v, col) {
+  if (col.format === 'chip') {
     const s = typeof v === 'boolean' ? (v ? 'on' : 'off') : cellText(v);
     const kind = CHIP_KINDS.find(([, re]) => re.test(s))?.[0] || 'plain';
     return s ? `<span class="chip ${kind}">${escapeHtml(s)}</span>` : '';
   }
-  if (format === 'count') {
+  if (col.format === 'count') {
     const n = Number(v) || 0;
     return `<span class="${n ? 'count-hot' : 'muted'}">${n}</span>`;
   }
-  return escapeHtml(cellText(v));
+  const style = col.width ? ` style="max-width: ${escapeHtml(col.width)}"` : '';
+  const text = escapeHtml(cellText(v));
+  return col.clip === 'start'
+    ? `<span class="cell clip-start"${style}><span>${text}</span></span>`
+    : `<span class="cell"${style}>${text}</span>`;
 }
 
 function renderListRows(page, block) {
@@ -600,12 +611,12 @@ function renderListRows(page, block) {
   const checkAll = checked
     ? `<th class="lst-check"><input type="checkbox" data-check-all title="check all shown"${shown.length && shownChecked === shown.length ? ' checked' : ''}${checking || !shown.length ? ' disabled' : ''} /></th>` : '';
   host.innerHTML = rows.length
-    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th></th>' : ''}</tr></thead><tbody>`
+    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => `<th>${escapeHtml(c.key)}</th>`).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
       + shown.map((r) => {
         const rk = rowKeyOf(block, r);
         return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
           + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
-          + cols.map(c => `<td>${cellHtml(r[c.key], c.format)}</td>`).join('')
+          + cols.map(c => `<td>${cellHtml(r[c.key], c)}</td>`).join('')
           + (actions.length ? `<td class="row-actions">${actions.map(a => {
             const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
             const blocked = blockedByChecks(page, a);

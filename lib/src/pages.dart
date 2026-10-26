@@ -333,12 +333,44 @@ class OutputBlock extends PageBlock {
 /// How a list column shows its value.
 const columnFormats = {'text', 'chip', 'count'};
 
+/// A text column's widest, as `<n>em`, `<n>ch` or `<n>px`.
+final _columnWidth = RegExp(r'^\d+(?:\.\d+)?(?:em|ch|px)$');
+
 class ListColumn {
-  const ListColumn(this.key, [this.format = 'text']);
+  const ListColumn(this.key, [this.format = 'text', this.width, this.clipStart = false]);
   final String key;
   final String format;
 
-  Map<String, dynamic> toJson() => {'key': key, 'format': format};
+  /// How wide a text column grows before a longer value is cut with an
+  /// ellipsis (`40em`); null: the dashboard's default.
+  final String? width;
+
+  /// Cut a long text value at its start, so the end of a path stays in view.
+  final bool clipStart;
+
+  Map<String, dynamic> toJson() => {'key': key, 'format': format, 'width': ?width, if (clipStart) 'clip': 'start'};
+}
+
+/// A `columns:` entry: `name`, `name:text|chip|count`, and for text a width
+/// (`40em`) and `start`, in any order (`path:start` is `path:text:start`).
+ListColumn? parseColumn(String spec) {
+  final parts = spec.split(':');
+  if (parts.first.isEmpty) return null;
+  final named = parts.length > 1 && columnFormats.contains(parts[1]);
+  final format = named ? parts[1] : 'text';
+  String? width;
+  var start = false;
+  for (final mod in parts.skip(named ? 2 : 1)) {
+    if (format != 'text') return null;
+    if (mod == 'start' && !start) {
+      start = true;
+    } else if (_columnWidth.hasMatch(mod) && width == null) {
+      width = mod;
+    } else {
+      return null;
+    }
+  }
+  return ListColumn(parts.first, format, width, start);
 }
 
 /// How a list's rows get checked (`check:`): by the dashboard, which keeps
@@ -956,13 +988,13 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   }
   final columns = <ListColumn>[];
   for (final c in columnSpecs) {
-    final parts = c.split(':');
-    final format = parts.length > 1 ? parts.sublist(1).join(':') : 'text';
-    if (parts.first.isEmpty || !columnFormats.contains(format)) {
-      problems.add('$where.columns: "$c" should be name or name:text|chip|count');
+    final column = parseColumn(c);
+    if (column == null) {
+      problems.add('$where.columns: "$c" should be name or name:text|chip|count — a text column may add '
+          'a width (name:text:40em) and :start to cut long values at their start');
       return null;
     }
-    columns.add(ListColumn(parts.first, format));
+    columns.add(column);
   }
   final rowAllowed = _Allowed(selected: !makesSelection, row: true, checks: checks);
   ListCheck? check;
