@@ -411,6 +411,8 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 /* Below the sticky head when ↑/↓ scrolls a row into view. */
 .lst tbody tr { scroll-margin-top: 30px; }
 .blk-scroll:focus { outline: none; }
+/* Reached with Tab: the list shows it has the keys. */
+.blk-scroll:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
 .blk-scroll:focus .lst tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* tree: folders with a caret and their row count, rows indented below them. */
 .lst tr.tree-dir td { cursor: pointer; }

@@ -358,9 +358,9 @@ class PagesApi {
   }
 
   /// Blocks to fetch again because these project-relative paths changed:
-  /// page id → block ids.
-  Map<String, Set<String>> watching(Iterable<String> paths) {
-    final config = load();
+  /// page id → block ids. [config]: the one just loaded, if the caller has it.
+  Map<String, Set<String>> watching(Iterable<String> paths, {PagesConfig? config}) {
+    config ??= load();
     final out = <String, Set<String>>{};
     for (final path in paths) {
       config.watching(path).forEach((page, blocks) => out.putIfAbsent(page, () => {}).addAll(blocks));
@@ -477,16 +477,16 @@ class PagesApi {
     } on FileSystemException {
       // Kept for this session only.
     }
-    if (!on) _autoStates[key]?.timer?.cancel();
+    if (!on) _autoStates[key]?.drop(); // what was waiting doesn't run
     log('[ext] $key auto ${on ? 'on' : 'off'}', LogLevel.system);
     broadcast({'type': 'ext-auto', 'page': page.id, 'item': action.id, 'on': on});
   }
 
   /// Project files that changed (project-relative paths, as the server's
   /// watcher reports them): start the `auto:` actions switched on that watch
-  /// them.
-  void filesChanged(Iterable<String> paths) {
-    final config = load();
+  /// them. [config]: the one just loaded, if the caller has it.
+  void filesChanged(Iterable<String> paths, {PagesConfig? config}) {
+    config ??= load();
     for (final page in config.pages) {
       for (final action in page.toolbar.whereType<PageAction>()) {
         final auto = action.auto;
@@ -499,22 +499,30 @@ class PagesApi {
 
   void _autoChanged(String pageId, String itemId, AutoRun auto, List<String> paths) {
     final st = _autoStates.putIfAbsent('$pageId.$itemId', _AutoState.new);
+    // Each path costs a stat, so stop once the outcome can't change: a run in
+    // flight needs one change made during it, an idle one a single new change.
     for (final path in paths) {
+      final started = st.started;
+      if (started != null && (st.once || st.again)) break;
       final at = _modified(path);
       final (start, end) = (st.lastStart, st.lastEnd);
-      if (st.started case final started?) {
+      if (started != null) {
         // During a run: once more after it — unless this run is that once more.
-        if (!st.once && !at.isBefore(started)) st.again = true;
+        if (!at.isBefore(started)) {
+          st.again = true;
+          st.note(path);
+        }
       } else if (start != null && end != null && !at.isAfter(end)) {
         // Reported after the last run, made before it ended: that run read it
         // (made before it began), or it is the run's own write, or it came
         // during the run — once more, unless the last run was the once more.
         if (at.isBefore(start) || st.lastWasOnce) continue;
-        st.changed.add(path);
+        st.note(path);
         st.pendingOnce = true;
       } else {
-        st.changed.add(path);
+        st.note(path);
         st.pending = true;
+        break;
       }
     }
     if (!st.pending && !st.pendingOnce) return;
@@ -535,8 +543,7 @@ class PagesApi {
     final action = page?.item(itemId);
     // emu.yaml changed meanwhile, or it was switched off.
     if (page == null || action is! PageAction || action.auto == null || !autoOn(page, action)) {
-      st.pending = st.pendingOnce = false;
-      st.changed.clear();
+      st.drop();
       return;
     }
     if (_running.contains(key)) {
@@ -545,18 +552,13 @@ class PagesApi {
       return;
     }
     final once = st.pendingOnce && !st.pending;
-    st.pending = st.pendingOnce = false;
-    final changed = st.changed.toList()..sort();
-    st.changed.clear();
+    final because = st.because;
+    st.drop();
     st
       ..started = DateTime.now()
       ..once = once;
     try {
-      await _run(page, action,
-          itemId: action.id,
-          vars: const {},
-          confirmed: false,
-          auto: changed.length > 3 ? '${changed.take(3).join(', ')} +${changed.length - 3}' : changed.join(', '));
+      await _run(page, action, itemId: action.id, vars: const {}, confirmed: false, auto: because);
     } finally {
       st
         ..lastStart = st.started
@@ -899,7 +901,28 @@ class _AutoState {
   /// last run reported after it ([pendingOnce]).
   bool pending = false;
   bool pendingOnce = false;
-  final Set<String> changed = {};
+
+  /// What changed, for the log line (up to [_noteLimit] paths kept).
+  final Set<String> _paths = {};
+  static const _noteLimit = 1000;
+
+  void note(String path) {
+    if (_paths.length < _noteLimit) _paths.add(path);
+  }
+
+  /// The first few changed paths, and how many more.
+  String get because {
+    final first = _paths.take(3).join(', ');
+    return _paths.length > 3 ? '$first +${_paths.length - 3}' : first;
+  }
+
+  /// Forget what was waiting, and its timer.
+  void drop() {
+    timer?.cancel();
+    timer = null;
+    pending = pendingOnce = false;
+    _paths.clear();
+  }
 
   /// The run in flight began; null while none is.
   DateTime? started;
@@ -915,16 +938,23 @@ class _AutoState {
   bool lastWasOnce = false;
 }
 
+/// The most a batch of live output carries. A command that prints faster
+/// than this loses the head of the batch on the way to dashboards (the run's
+/// own output, at the end, still has its last [_outputLimit]).
+const _liveBatchLimit = 64 * 1024;
+
 /// A running command's output for dashboards, sent in batches: what came
-/// within [_outputEvery] goes as one chunk (its tail, if that's a lot). What
-/// waits for the next batch is held to the tail too, so a command that prints
-/// fast can't grow it unbounded.
+/// within [_outputEvery] goes as one chunk — its tail, after a mark, when it
+/// is over the limit ([_liveBatchLimit] unless given). What waits for the
+/// next batch is held to the tail too, so a command that prints fast can't
+/// grow it unbounded.
 class LiveOutput {
-  LiveOutput(this._send, {int limit = _outputLimit}) : _limit = limit, _tail = _Tail(limit);
+  LiveOutput(this._send, {int limit = _liveBatchLimit}) : _limit = limit, _tail = _Tail(limit);
 
   final void Function(String chunk) _send;
   final int _limit;
   _Tail _tail;
+  int _added = 0; // characters that came for the next batch, kept or not
   Timer? _timer;
 
   /// Characters held for the next batch: at most twice the limit.
@@ -932,6 +962,7 @@ class LiveOutput {
 
   void add(String chunk) {
     _tail.add(chunk);
+    _added += chunk.length;
     _timer ??= Timer(_outputEvery, flush);
   }
 
@@ -940,8 +971,10 @@ class LiveOutput {
     _timer = null;
     final text = _tail.text;
     if (text.isEmpty) return;
+    final skipped = _added - text.length;
     _tail = _Tail(_limit);
-    _send(text);
+    _added = 0;
+    _send(skipped > 0 ? '… $skipped characters skipped while streaming …\n$text' : text);
   }
 }
 

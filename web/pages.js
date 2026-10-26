@@ -29,7 +29,9 @@ const pageState = {
   current: 'debug',
   history: {},           // page id → its recent finished runs, newest first (this tab only)
   viewing: {},           // page id → the history entry the output shows; null: the newest, or the run in flight
-  live: {},              // 'page.item' → the output of a run in flight, as it comes
+  live: {},              // 'page.item' → the output of a run in flight, as it comes (its last LIVE_LIMIT characters)
+  liveTotal: {},         // 'page.item' → how many characters of it came in all
+  liveSince: {},         // 'page.item' → when this tab saw it start
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
   auto: {},              // 'page.item' → whether an `auto:` action runs on file changes (the server keeps it)
@@ -79,7 +81,7 @@ async function loadPages() {
     const j = await (await api('/api/pages')).json();
     pageState.pages = j.pages || [];
     pageState.problems = j.problems || [];
-    for (const [id, run] of Object.entries(j.last || {})) remember(id, run);
+    for (const [id, run] of Object.entries(j.last || {})) remember(id, run, { follow: false });
     pageState.auto = j.auto || {};
   } catch (_) { return; }
   if (pageState.current !== 'debug' && !currentPage()) pageState.current = 'debug';
@@ -141,10 +143,11 @@ const followTimers = {}; // page id → the pending fetch after a pick made with
 // the keys rest, so stepping through rows fetches only the row stopped at.
 function select(page, list, row, { soon = false } = {}) {
   const key = rowKeyOf(list, row);
-  if (pageState.selected[page.id] === key) return;
+  const before = pageState.selected[page.id];
+  if (before === key) return;
   pageState.selected[page.id] = key;
   savePagePrefs();
-  renderListRows(page, list);
+  if (!movePick(list, before, key)) renderListRows(page, list);
   renderPageBar(page);
   // Everything that reads {{selected.*}} follows the pick.
   // A frame that isn't fetched again still hears of the pick (onData's
@@ -158,14 +161,29 @@ function select(page, list, row, { soon = false } = {}) {
   else follow();
 }
 
-// ↑/↓ in the selection list: pick the row above or below, as shown (filter
-// and order applied).
+// The highlight moves to the picked row as drawn, so an arrow key doesn't
+// redraw a big list. False when that's not enough: the row isn't drawn, or in
+// a tree the old pick isn't either (a closed folder marks it).
+function movePick(list, from, to) {
+  const host = blockEl(list)?.querySelector('[data-rows]');
+  const drawn = (k) => host?.querySelector(`tr[data-row="${CSS.escape(k)}"]`);
+  const next = to === undefined ? null : drawn(to);
+  if (!next || (list.tree && from !== undefined && !drawn(from))) return false;
+  host.querySelectorAll('tr.sel').forEach(tr => tr.classList.remove('sel'));
+  next.classList.add('sel');
+  return true;
+}
+
+// The keys in the selection list: ↑/↓ the row above or below, PageUp/PageDown
+// ten rows, Home/End the first and last — as shown (filter and order applied).
+const STEP_KEYS = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10, End: Infinity, Home: -Infinity };
+
 function stepSelection(page, list, step) {
   const rows = listShown[blockKey(page, list)] || [];
   if (!rows.length) return;
   const i = rows.findIndex(r => rowKeyOf(list, r) === pageState.selected[page.id]);
-  const next = i < 0 ? (step > 0 ? 0 : rows.length - 1) : Math.min(Math.max(i + step, 0), rows.length - 1);
-  select(page, list, rows[next], { soon: true });
+  const from = i < 0 ? (step > 0 ? -1 : rows.length) : i;
+  select(page, list, rows[Math.min(Math.max(from + step, 0), rows.length - 1)], { soon: true });
   blockEl(list)?.querySelector('tr.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
@@ -417,12 +435,14 @@ const HISTORY_MAX = 10;
 const LIVE_LIMIT = 256 * 1024; // as much of a run's output as the server keeps
 
 // A finished run, once — the POST answer and the broadcast both bring it.
-function remember(pageId, run) {
+// [follow]: the output shows it (a run that just finished, not one read
+// back when the pages reload).
+function remember(pageId, run, { follow = true } = {}) {
   if (!run?.at) return;
   const hist = pageState.history[pageId] || [];
   if (hist.some(r => r.item === run.item && r.at === run.at)) return;
   pageState.history[pageId] = [run, ...hist].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, HISTORY_MAX);
-  pageState.viewing[pageId] = null; // show what just finished
+  if (follow) pageState.viewing[pageId] = null;
 }
 
 function finishRun(page, item, key, run, quiet) {
@@ -439,17 +459,23 @@ function onPageRun(msg) {
   if (!page) return;
   const key = `${msg.page}.${msg.item}`;
   if (msg.event === 'output') {
-    pageState.live[key] = ((pageState.live[key] || '') + (msg.chunk || '')).slice(-LIVE_LIMIT);
+    const chunk = msg.chunk || '';
+    pageState.live[key] = ((pageState.live[key] || '') + chunk).slice(-LIVE_LIMIT);
+    pageState.liveTotal[key] = (pageState.liveTotal[key] || 0) + chunk.length;
     if (currentPage() === page) renderOutputs(page);
     return;
   }
   if (msg.event === 'started') {
     pageState.running.add(key);
     pageState.live[key] = '';
+    pageState.liveTotal[key] = 0;
+    pageState.liveSince[key] = Date.now();
     pageState.viewing[page.id] = null; // follow it
   } else if (msg.event === 'finished') {
     pageState.running.delete(key);
     delete pageState.live[key];
+    delete pageState.liveTotal[key];
+    delete pageState.liveSince[key];
     remember(page.id, msg.run);
     if (msg.run?.state) pageState.toggles[key] = msg.run.state;
     if (msg.auto && !msg.run?.ok) toast(`⚡ ${msg.item} (on change): ${msg.run?.error || 'failed'}`);
@@ -716,14 +742,14 @@ function initList(page, block, el) {
     if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent;
   });
   if (block.id !== page.selection) return;
-  // The selection list takes the keys once clicked: ↑/↓ pick, / goes to the
-  // filter, and ↓ or Enter there comes back.
+  // The selection list takes the keys once clicked: ↑/↓ (PageUp/PageDown,
+  // Home/End) pick, / goes to the filter, and ↓ or Enter there comes back.
   rowsEl.tabIndex = 0;
   rowsEl.addEventListener('keydown', (e) => {
     if (e.altKey || e.metaKey || e.ctrlKey) return;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (e.key in STEP_KEYS) {
       e.preventDefault();
-      stepSelection(page, block, e.key === 'ArrowDown' ? 1 : -1);
+      stepSelection(page, block, STEP_KEYS[e.key]);
     } else if (e.key === '/') {
       e.preventDefault();
       search.focus();
@@ -838,9 +864,18 @@ function sortHead(c, sort) {
 
 const TREE_SORT = '(tree)'; // the sort key of a tree's head: folder and row names
 
+// A row's path, split once: a draw asks for it to filter, to build the
+// tree, to sort and to name the row.
+const treePaths = new WeakMap(); // row → {cols, parts}
+
 function treePath(block, row) {
-  const parts = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
-  return parts.length ? parts : [rowKeyOf(block, row) ?? ''];
+  const cols = block.tree.columns.join('\u0000');
+  const known = treePaths.get(row);
+  if (known?.cols === cols) return known.parts;
+  const split = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
+  const parts = split.length ? split : [rowKeyOf(block, row) ?? ''];
+  treePaths.set(row, { cols, parts });
+  return parts;
 }
 
 // The folder keys ('prod/tpl/home') above [row].
@@ -895,13 +930,18 @@ function treeItems(page, block, root, { filtering, sort, format }) {
 
 function treeIndent(depth) { return 10 + depth * 16; }
 
-function toggleDir(page, block, d) {
+// [deep] (⌥-click): every folder below goes the same way.
+function toggleDir(page, block, d, { deep = false } = {}) {
   const key = blockKey(page, block);
   const opened = { ...pageState.tree[key] };
-  const initial = d.depth < block.tree.open;
-  const open = !(d.key in opened ? opened[d.key] : initial);
-  if (open === initial) delete opened[d.key];
-  else opened[d.key] = open;
+  const initial = (x) => x.depth < block.tree.open;
+  const open = !(d.key in opened ? opened[d.key] : initial(d));
+  const set = (x) => {
+    if (open === initial(x)) delete opened[x.key];
+    else opened[x.key] = open;
+    if (deep) for (const c of x.dirs.values()) set(c);
+  };
+  set(d);
   if (Object.keys(opened).length) pageState.tree[key] = opened;
   else delete pageState.tree[key];
   savePagePrefs();
@@ -945,7 +985,8 @@ function renderListRows(page, block) {
   const checkedIn = (rs) => checked ? rs.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
   const checkBox = (attr, rs) => `<input type="checkbox" ${attr}${rs.length && checkedIn(rs) === rs.length ? ' checked' : ''}`
     + `${checking || !rs.length ? ' disabled' : ''} />`;
-  const checkAll = checked ? `<th class="lst-check">${checkBox('data-check-all title="check all shown"', matched)}</th>` : '';
+  const checkAll = checked
+    ? `<th class="lst-check">${checkBox(`data-check-all title="${block.tree && !filter ? 'check all, folded ones too' : 'check all shown'}"`, matched)}</th>` : '';
   const treeHead = block.tree ? sortHead({ key: TREE_SORT, label: block.tree.columns.join(' / ') }, sort) : '';
   const buttons = () => actions.map(a => {
     const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
@@ -962,7 +1003,8 @@ function renderListRows(page, block) {
       + (actions.length ? `<td class="row-actions">${buttons()}</td>` : '')
       + '</tr>';
   };
-  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}">`
+  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}"`
+    + `${filter ? '' : ' title="⌥-click: every folder below too"'}>`
     + (checked ? `<td class="lst-check">${checkBox('data-check-dir', d.all)}</td>` : '')
     + `<td class="tree-name" colspan="${cols.length + 1}" style="padding-left: ${treeIndent(d.depth)}px">`
     + `<span class="tree-caret">${open ? '▾' : '▸'}</span>${escapeHtml(d.name)}<span class="tree-count">${d.all.length}</span></td>`
@@ -982,7 +1024,7 @@ function renderListRows(page, block) {
   }
   host.querySelectorAll('tr[data-dir]').forEach(tr => {
     const d = dirs.get(tr.dataset.dir);
-    if (!filter) tr.onclick = () => toggleDir(page, block, d); // a filter keeps every folder above a match open
+    if (!filter) tr.onclick = (e) => toggleDir(page, block, d, { deep: e.altKey }); // a filter keeps every folder above a match open
     const box = tr.querySelector('[data-check-dir]');
     if (!box) return;
     box.indeterminate = checkedIn(d.all) > 0 && checkedIn(d.all) < d.all.length;
@@ -1507,31 +1549,77 @@ function renderOutput(page, el) {
   renderHistory(el, hist, viewing, busy.length > 0);
   el.querySelector('[data-none]').hidden = !!(liveKey || run);
   pre.hidden = !(liveKey || run);
-  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; return; }
+  if (liveKey) startOutputTicker();
+  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; el.dataset.shown = ''; return; }
   // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
   const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
   const prev = el.dataset.shown || '';
-  const same = prev === id || (!liveKey && prev === `live:${page.id}.${run.item}`);
   const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-  let text;
+  el.dataset.shown = id;
   if (liveKey) {
     cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
     cmd.title = '';
-    meta.textContent = '';
-    text = pageState.live[liveKey] || '';
-  } else {
-    const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
-    const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
-    cmd.textContent = `$ ${run.command}`;
-    cmd.title = run.command;
-    meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
-    text = run.output;
+    const since = pageState.liveSince[liveKey];
+    meta.textContent = since ? `${Math.round((Date.now() - since) / 1000)}s` : '';
+    renderLive(pre, el, liveKey, prev === id);
+    if (prev !== id) pre.scrollTop = pre.scrollHeight;
+    else if (atEnd) pre.scrollTop = pre.scrollHeight;
+    return;
   }
-  const body = stripAnsi(text);
-  pre.innerHTML = body ? linkify(body) : `<span class="muted">${liveKey ? 'no output yet' : '(no output)'}</span>`;
-  el.dataset.shown = id;
-  if (!same) pre.scrollTop = liveKey ? pre.scrollHeight : 0;
+  if (prev === id) return; // drawn already: a finished run doesn't change
+  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+  cmd.textContent = `$ ${run.command}`;
+  cmd.title = run.command;
+  meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
+  const body = stripAnsi(run.output);
+  pre.innerHTML = body ? linkify(body) : '<span class="muted">(no output)</span>';
+  el._live = null;
+  // The run that was just streaming here keeps its place (or its end); another starts at the top.
+  if (prev !== `live:${page.id}.${run.item}`) pre.scrollTop = 0;
   else if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+// A run in flight: only what came since the last draw is added, so a chatty
+// command doesn't redraw its whole output for every piece. The buffer keeps
+// the last LIVE_LIMIT characters; once the page holds twice that, it's
+// redrawn from the buffer. An escape sequence cut at the end of a piece waits
+// for the rest.
+function renderLive(pre, el, key, same) {
+  const text = pageState.live[key] || '';
+  const total = pageState.liveTotal[key] || 0;
+  const drawn = el._live;
+  const fresh = drawn ? total - drawn.total : -1;
+  if (same && drawn && drawn.total > 0 && fresh >= 0 && fresh <= text.length && drawn.size + fresh <= 2 * LIVE_LIMIT) {
+    if (!fresh) return;
+    const piece = text.slice(text.length - fresh);
+    const keep = heldEscape(piece);
+    pre.insertAdjacentHTML('beforeend', linkify(stripAnsi(piece.slice(0, piece.length - keep))));
+    el._live = { total: total - keep, size: drawn.size + fresh - keep };
+    return;
+  }
+  const keep = heldEscape(text);
+  const body = stripAnsi(text.slice(0, text.length - keep));
+  pre.innerHTML = body ? linkify(body) : '<span class="muted">no output yet</span>';
+  el._live = { total: body ? total - keep : 0, size: text.length - keep };
+}
+
+// How many characters at the end of [text] are an escape sequence still coming.
+function heldEscape(text) {
+  const at = text.lastIndexOf('\x1b');
+  if (at < 0 || text.length - at > 32 || /^\x1b\[[0-9;?]*[ -\/]*[@-~]/.test(text.slice(at))) return 0;
+  return text.length - at;
+}
+
+// The elapsed time of a run in flight, once a second while one is on screen.
+let outputTicker = null;
+function startOutputTicker() {
+  if (outputTicker) return;
+  outputTicker = setInterval(() => {
+    const page = currentPage();
+    if (page && [...pageState.running].some(k => k.startsWith(`${page.id}.`))) renderOutputs(page);
+    else { clearInterval(outputTicker); outputTicker = null; }
+  }, 1000);
 }
 
 // The menu of recent runs, rebuilt only when they change — not for every
