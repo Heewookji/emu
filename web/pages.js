@@ -41,6 +41,7 @@ const pageState = {
   input: {},             // 'page.form' → {field: value}
   stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
+  closed: {},            // page id → the areas hidden with their ×
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -54,12 +55,13 @@ try {
   if (prefs.tree && typeof prefs.tree === 'object') pageState.tree = prefs.tree;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
+  if (prefs.closed && typeof prefs.closed === 'object') pageState.closed = prefs.closed;
 } catch (_) {}
 function savePagePrefs() {
   try {
     localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
       selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
-      input: pageState.input, sizes: pageState.sizes,
+      input: pageState.input, sizes: pageState.sizes, closed: pageState.closed,
     }));
   } catch (_) {}
 }
@@ -286,7 +288,7 @@ function renderPageBar(page) {
     const title = blocked ? (usesSelection(item) && !hasSelection ? 'select a row first' : `check a row in ${item.needsChecked} first`) : item.command;
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
       + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`;
-  }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  }).join('') + '<span class="grow"></span>' + reopenHtml(page) + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -300,6 +302,7 @@ function renderPageBar(page) {
     };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
+  pageEls.bar.querySelectorAll('[data-open-area]').forEach(b => { b.onclick = () => openArea(page, b.dataset.openArea); });
 }
 
 async function refreshToggles(page) {
@@ -409,11 +412,13 @@ function renderPageBody(page) {
   const areas = { left: [], main: [], bottom: [] };
   for (const b of page.blocks) areas[b.area]?.push(b);
   const body = pageEls.body;
-  body.classList.toggle('no-left', !areas.left.length);
-  body.classList.toggle('no-main', !areas.main.length);
   body.innerHTML = page.blocks.length
-    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}"></div>`).join('')
+    ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}">`
+      + (areas[a].length ? `<button class="area-close" data-close-area="${a}" title="Hide this area — the bar above opens it again">×</button>` : '')
+      + '</div>').join('')
     : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
+  applyAreas(page);
+  body.querySelectorAll('[data-close-area]').forEach(b => { b.onclick = () => closeArea(page, b.dataset.closeArea); });
   for (const [area, blocks] of Object.entries(areas)) {
     const host = body.querySelector(`[data-area="${area}"]`);
     for (const b of blocks) {
@@ -427,6 +432,53 @@ function renderPageBody(page) {
   }
   addResizers(page, areas);
   renderOutputs(page);
+}
+
+// ---- hidden areas --------------------------------------------------------------
+// Each area with blocks has a × that hides it; the others take its room and
+// the page bar offers it back. Kept per page. The last open area can't be
+// hidden. Its blocks keep the pick and checks: those lists are still fetched,
+// the rest when the area opens.
+
+function areaClosed(page, area) { return (pageState.closed[page.id] || []).includes(area); }
+
+function areasWithBlocks(page) { return ['left', 'main', 'bottom'].filter(a => page.blocks.some(b => b.area === a)); }
+
+function applyAreas(page) {
+  const body = pageEls.body;
+  const used = areasWithBlocks(page);
+  const open = used.filter(a => !areaClosed(page, a));
+  for (const a of ['left', 'main', 'bottom']) {
+    body.classList.toggle(`no-${a}`, !open.includes(a));
+    const el = body.querySelector(`[data-area="${a}"]`);
+    if (el) el.hidden = !open.includes(a);
+  }
+  body.querySelectorAll('[data-close-area]').forEach(b => { b.hidden = open.length < 2; });
+}
+
+function closeArea(page, area) {
+  pageState.closed[page.id] = [...new Set([...(pageState.closed[page.id] || []), area])];
+  savePagePrefs();
+  applyAreas(page);
+  renderPageBar(page);
+}
+
+// [area]: one area, or '*' for all of them.
+function openArea(page, area) {
+  const closed = (pageState.closed[page.id] || []).filter(a => area !== '*' && a !== area);
+  if (closed.length) pageState.closed[page.id] = closed;
+  else delete pageState.closed[page.id];
+  savePagePrefs();
+  applyAreas(page);
+  renderPageBar(page);
+  loadBlocks(page, page.blocks.filter(b => !areaClosed(page, b.area) && pageState.stale.has(blockKey(page, b))));
+}
+
+// The page bar's way back to hidden areas.
+function reopenHtml(page) {
+  const closed = areasWithBlocks(page).filter(a => areaClosed(page, a));
+  return closed.map(a => `<button class="area-open" data-open-area="${a}" title="Show the ${a} area again">+ ${a}</button>`).join('')
+    + (closed.length > 1 ? '<button class="area-open" data-open-area="*" title="Show every area">open all</button>' : '');
 }
 
 // ---- panel sizes ---------------------------------------------------------------
@@ -492,6 +544,8 @@ function loadBlocks(page, blocks) {
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
     if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
+    // A hidden area is fetched when it opens — but the lists that hold the pick and the checks always are.
+    if (areaClosed(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }

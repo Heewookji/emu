@@ -759,7 +759,10 @@ emu report --mine                               # your reports and their status 
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
   refresh periodically. The first screenshot loads on its own once the app is running.
-  Drag the panel's left edge to widen it (kept in the browser; double-click to reset).
+  Drag the panel's left edge to widen it (kept in the browser; double-click to reset). Its × (or the
+  `s` key) closes it for work that doesn't look at the device: the page takes its width and no
+  screenshot is fetched — auto refresh pauses — until the tab on the right edge opens it again
+  (kept in the browser).
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
@@ -881,7 +884,7 @@ pages:
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
 | `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. An area's × hides it and the others take its room (`+ left` in the page bar brings it back, `open all` every one); a hidden area's blocks are fetched when it opens, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|

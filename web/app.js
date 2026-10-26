@@ -207,6 +207,7 @@ async function action(path, label) {
 // [retries]: for the automatic first load — the capture can fail right as the
 // app reaches `running`, and nothing else would ask again until ↻.
 function refreshShot(retries = 0) {
+  if (!screenOpen()) { shotPending = true; return; } // fetched when the panel opens again
   const img = els.shotImg;
   // Only the first frame gets the loader; later refreshes keep the old frame up.
   if (img.hidden) showLoading('loading screen…');
@@ -335,10 +336,32 @@ async function openUrl() {
 }
 
 let autoTimer = null;
-els.shotAuto.addEventListener('change', () => {
+function syncAutoRefresh() {
   clearInterval(autoTimer);
-  if (els.shotAuto.checked) { refreshShot(); autoTimer = setInterval(refreshShot, 1500); }
-});
+  autoTimer = null;
+  if (els.shotAuto.checked && screenOpen()) { refreshShot(); autoTimer = setInterval(refreshShot, 1500); }
+}
+els.shotAuto.addEventListener('change', syncAutoRefresh);
+
+// The screen panel closes for work that doesn't look at the device (× or s),
+// leaving its width to the page. While closed no screenshot is fetched — auto
+// refresh pauses — and it opens with a fresh one. Kept per browser.
+const SCREEN_HIDDEN_KEY = 'emu.screenHidden';
+let shotPending = false; // a refresh came while the panel was closed
+function screenOpen() { return !document.getElementById('screen').hidden; }
+function setScreenOpen(open) {
+  document.getElementById('screen').hidden = !open;
+  document.getElementById('screen-open').hidden = open;
+  try {
+    if (open) localStorage.removeItem(SCREEN_HIDDEN_KEY);
+    else localStorage.setItem(SCREEN_HIDDEN_KEY, '1');
+  } catch (_) {}
+  syncAutoRefresh();
+  if (open && shotPending) { shotPending = false; refreshShot(); }
+}
+document.getElementById('screen-close').onclick = () => setScreenOpen(false);
+document.getElementById('screen-open').onclick = () => setScreenOpen(true);
+try { if (localStorage.getItem(SCREEN_HIDDEN_KEY)) setScreenOpen(false); } catch (_) {}
 document.getElementById('shot-refresh').onclick = () => refreshShot();
 document.getElementById('text-send').onclick = sendText;
 els.textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
@@ -616,13 +639,14 @@ document.querySelectorAll('.lvl').forEach(btn => {
   });
 });
 
-// Keyboard: r = reload, R = restart (when not typing in a field).
+// Keyboard: r = reload, R = restart, s = screen panel (when not typing in a field).
 document.addEventListener('keydown', (e) => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return; // don't hijack typing in any field
   if (e.metaKey || e.ctrlKey || e.altKey) return; // a browser shortcut (⌘R reloads the page, not the app)
   if (dialogOpen()) return; // a dialog is up (pages.js)
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
+  else if (e.key === 's') setScreenOpen(!screenOpen());
 });
 
 function escapeHtml(s) {
