@@ -1558,7 +1558,7 @@ function renderHistory(el, hist, viewing, live) {
 // preview disables Run unless the action allows it.
 
 const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'choices', 'action', 'action-title', 'action-msg',
-  'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
+  'action-detail', 'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
   .map(k => [k, document.getElementById(`confirm-${k}`)]));
 let dialogResolve = null;
 let dialogKeep = null; // openDialog's [keep]: what to hold on to if OK is pressed
@@ -1592,7 +1592,11 @@ function openDialog({ from = '', title, message = '', detail = '', fields = [], 
   }
   renderChoices(choices, danger);
   dlg.action.hidden = !action;
-  if (action) { dlg['action-title'].textContent = action.title; show(dlg['action-msg'], action.message); }
+  if (action) {
+    dlg['action-title'].textContent = action.title;
+    show(dlg['action-msg'], action.message);
+    show(dlg['action-detail'], action.detail);
+  }
   renderConfirmPreview(preview);
   dlg.command.hidden = !command;
   dlg.cmd.textContent = dlg['cmd-line'].textContent = command ? `$ ${command}` : '';
@@ -1691,13 +1695,14 @@ function confirmRun(opts) {
 }
 
 // A run's dialog with the words of the view that asked for it: the view's
-// lead (under its "from" line), emu.yaml's follow with the command.
+// lead (under its "from" line), emu.yaml's follow with the command. Every word
+// of emu.yaml's moves under [action] whole — the view's can't stand in for it.
 function withAsk(opts, ask) {
   return {
     ...opts,
-    title: ask.title, message: ask.message, detail: ask.detail,
-    action: { title: opts.title, message: opts.message },
-    danger: opts.danger || ask.danger,
+    title: ask.title, message: ask.message || '', detail: ask.detail || '',
+    action: { title: opts.title, message: opts.message || '', detail: opts.detail || '' },
+    danger: !!(opts.danger || ask.danger),
   };
 }
 

@@ -156,11 +156,28 @@ const answer = (body) => onMessage({ source: parent, data: { type: 'emu:result',
         'title': 'Push 2 templates?',
         'message': '',
         'detail': 'a\nb',
-        'action': {'title': 'Push to stage', 'message': 'right away'},
+        'action': {'title': 'Push to stage', 'message': 'right away', 'detail': ''},
         'command': './tpl.sh deploy stage',
         'preview': null,
         'button': 'push', // emu.yaml's, not the view's
         'danger': true,
+      });
+    });
+
+    test("emu.yaml's words stay whole under action: the view's detail can't take their place", () async {
+      final r = await _js(prelude, '''
+        const run = { title: 'Push to stage', message: 'right away', detail: 'from emu.yaml', command: 'x', button: 'push', danger: true };
+        const merged = withAsk(run, frameAsk({ title: 'Push?', detail: 'from the view', danger: false }));
+        const bare = withAsk(run, frameAsk({ title: 'Push?' }));
+        return { merged: [merged.detail, merged.action, merged.danger], bare: [bare.detail, bare.action.detail] };
+      ''');
+      expect(r, {
+        'merged': [
+          'from the view',
+          {'title': 'Push to stage', 'message': 'right away', 'detail': 'from emu.yaml'},
+          true, // a view can't make a danger run look safe
+        ],
+        'bare': ['', 'from emu.yaml'],
       });
     });
   });
