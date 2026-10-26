@@ -390,6 +390,17 @@ class ListCheck {
       };
 }
 
+/// A list drawn as folders (`tree:`): the values of [columns], each split at
+/// `/`, make a row's path — its last part names the row, the parts before it
+/// are folders. Folders deeper than [open] levels start closed.
+class ListTree {
+  const ListTree(this.columns, {this.open = 0});
+  final List<String> columns;
+  final int open;
+
+  Map<String, dynamic> toJson() => {'columns': columns, 'open': open};
+}
+
 /// The order a list starts in (`sort: minVer:desc`); clicking a column head
 /// in the dashboard changes it.
 class ListSort {
@@ -424,6 +435,7 @@ class ListBlock extends PageBlock {
     this.rowActions = const [],
     this.check,
     this.sort,
+    this.tree,
   });
 
   final PageCommand run;
@@ -440,6 +452,9 @@ class ListBlock extends PageBlock {
 
   /// The starting order; null: as the command prints the rows.
   final ListSort? sort;
+
+  /// Draw the rows as folders; null: a flat table.
+  final ListTree? tree;
 
   @override
   PageCommand get command => run;
@@ -468,6 +483,7 @@ class ListBlock extends PageBlock {
         'rowActions': [for (final a in rowActions) a.toJson()],
         'check': ?check?.toJson(),
         'sort': ?sort?.toJson(),
+        'tree': ?tree?.toJson(),
         'watch': watch,
       };
 }
@@ -1054,6 +1070,19 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     }
     sort = ListSort(parts.first, descending: order == 'desc');
   }
+  ListTree? tree;
+  if (m['tree'] case final Object raw) {
+    // `tree: path`, `tree: [env, path]` or `tree: {columns: …, open: <depth>}`.
+    final spec = raw is Map ? raw['columns'] : raw;
+    final columns = spec is String ? [spec] : _strings(spec);
+    final open = raw is Map ? raw['open'] ?? 0 : 0;
+    final extra = raw is Map && raw.keys.any((k) => k != 'columns' && k != 'open');
+    if (columns == null || columns.isEmpty || columns.any((c) => c.isEmpty) || open is! int || open < 0 || extra) {
+      problems.add('$where.tree: expected a column, a list of columns, or {columns: [env, path], open: <depth>}');
+      return null;
+    }
+    tree = ListTree(columns, open: open);
+  }
   return ListBlock(
     id: id,
     area: area,
@@ -1065,6 +1094,7 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     rowActions: rowActions,
     check: check,
     sort: sort,
+    tree: tree,
   );
 }
 

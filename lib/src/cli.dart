@@ -2727,14 +2727,15 @@ Future<int> _blockCmd(List<String> args) async {
     print('(no rows)');
     return 0;
   }
-  print(_table(rows));
+  // A tree list (`tree:`) shows its path columns first.
+  print(_table(rows, first: [for (final c in r['tree'] as List? ?? const []) '$c']));
   if (r['truncated'] != null) print('(first ${rows.length} of ${r['truncated']} rows)');
   return 0;
 }
 
-/// [rows] as aligned columns (every key, in first-seen order).
-String _table(List<Map<String, dynamic>> rows) {
-  final cols = <String>{for (final r in rows) ...r.keys}.toList();
+/// [rows] as aligned columns (every key, in first-seen order — [first] before the rest).
+String _table(List<Map<String, dynamic>> rows, {List<String> first = const []}) {
+  final cols = <String>{...first.where((c) => rows.any((r) => r.containsKey(c))), for (final r in rows) ...r.keys}.toList();
   String cell(Object? v) {
     final s = v == null ? '' : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
     final line = s.replaceAll('\n', ' ');

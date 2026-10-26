@@ -35,6 +35,7 @@ const pageState = {
   bulk: {},              // 'page.block.action' → progress of a bulk run, "2/5"
   seg: {},               // 'page.block' → chosen segment
   sort: {},              // 'page.block' → {key, dir} from a column head click; null: the command's order
+  tree: {},              // 'page.block' → {folder key: open} where a click changed it
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
@@ -50,13 +51,14 @@ try {
   if (prefs.checked && typeof prefs.checked === 'object') pageState.checked = prefs.checked;
   if (prefs.seg && typeof prefs.seg === 'object') pageState.seg = prefs.seg;
   if (prefs.sort && typeof prefs.sort === 'object') pageState.sort = prefs.sort;
+  if (prefs.tree && typeof prefs.tree === 'object') pageState.tree = prefs.tree;
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
 } catch (_) {}
 function savePagePrefs() {
   try {
     localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
-      selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort,
+      selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
       input: pageState.input, sizes: pageState.sizes,
     }));
   } catch (_) {}
@@ -593,9 +595,18 @@ function initList(page, block, el) {
   });
 }
 
+// A tree's path columns are drawn as its folders, so they aren't columns by default.
 function listColumns(block, rows) {
   if (block.columns.length) return block.columns;
-  return Object.keys(rows[0] || {}).map(k => ({ key: k, format: 'text' }));
+  const path = new Set(block.tree?.columns || []);
+  return Object.keys(rows[0] || {}).filter(k => !path.has(k)).map(k => ({ key: k, format: 'text' }));
+}
+
+// What a filter looks through: the columns, and a tree row's path.
+function rowTexts(block, cols, row) {
+  const texts = cols.map(c => cellText(row[c.key]));
+  if (block.tree) texts.push(treePath(block, row).join('/'));
+  return texts;
 }
 
 function cellText(v) {
@@ -668,11 +679,93 @@ function sortRows(rows, sort, format) {
   }).map(([r]) => r);
 }
 
+// A column head; [c.label] for one that isn't a column (a tree's names).
 function sortHead(c, sort) {
   const dir = sort?.key === c.key ? sort.dir : null;
-  return `<th class="sortable${dir ? ' sorted' : ''}" data-sort="${escapeHtml(c.key)}" title="sort by ${escapeHtml(c.key)}"`
-    + ` aria-sort="${dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'}">${escapeHtml(c.key)}`
+  const label = c.label ?? c.key;
+  return `<th class="sortable${dir ? ' sorted' : ''}" data-sort="${escapeHtml(c.key)}" title="sort by ${escapeHtml(label)}"`
+    + ` aria-sort="${dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'}">${escapeHtml(label)}`
     + `<span class="sort-mark">${dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : ''}</span></th>`;
+}
+
+// ---- tree ----------------------------------------------------------------------
+// `tree: [env, path]`: a row's path is the values of those columns, each split
+// at `/`. Its last part names the row; the parts before it are folders, which
+// a click opens or closes. Folders deeper than `open:` start closed, and a
+// click is kept per browser. A filter shows the matching rows with every
+// folder above them open. Folders come first, in the order the command lists
+// them — or by name, when the tree's own head sorts.
+
+const TREE_SORT = '(tree)'; // the sort key of a tree's head: folder and row names
+
+function treePath(block, row) {
+  const parts = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
+  return parts.length ? parts : [rowKeyOf(block, row) ?? ''];
+}
+
+// The folder keys ('prod/tpl/home') above [row].
+function folderKeysOf(block, row) {
+  const keys = new Set();
+  if (!row) return keys;
+  const parts = treePath(block, row);
+  for (let i = 1; i < parts.length; i++) keys.add(parts.slice(0, i).join('/'));
+  return keys;
+}
+
+// [rows] as folders: {key, name, depth, dirs: name → folder, rows: its own rows, all: every row below}.
+function buildTree(block, rows) {
+  const root = { key: '', name: '', depth: -1, dirs: new Map(), rows: [], all: rows };
+  for (const row of rows) {
+    let node = root;
+    for (const part of treePath(block, row).slice(0, -1)) {
+      let next = node.dirs.get(part);
+      if (!next) {
+        next = { key: node.key ? `${node.key}/${part}` : part, name: part, depth: node.depth + 1, dirs: new Map(), rows: [], all: [] };
+        node.dirs.set(part, next);
+      }
+      next.all.push(row);
+      node = next;
+    }
+    node.rows.push(row);
+  }
+  return root;
+}
+
+// The open part of the tree, top to bottom: {dir, open} and {row, depth}.
+function treeItems(page, block, root, { filtering, sort, format }) {
+  const opened = pageState.tree[blockKey(page, block)] || {};
+  const byName = sort?.key === TREE_SORT;
+  const dir = sort?.dir === 'desc' ? -1 : 1;
+  const leaf = (r) => treePath(block, r).at(-1);
+  const items = [];
+  const walk = (node) => {
+    const dirs = [...node.dirs.values()];
+    if (byName) dirs.sort((a, b) => dir * naturalOrder.compare(a.name, b.name));
+    for (const d of dirs) {
+      const open = filtering || (d.key in opened ? opened[d.key] : d.depth < block.tree.open);
+      items.push({ dir: d, open });
+      if (open) walk(d);
+    }
+    const rows = byName ? [...node.rows].sort((a, b) => dir * naturalOrder.compare(leaf(a), leaf(b))) : sortRows(node.rows, sort, format);
+    for (const row of rows) items.push({ row, depth: node.depth + 1 });
+  };
+  walk(root);
+  return items;
+}
+
+function treeIndent(depth) { return 10 + depth * 16; }
+
+function toggleDir(page, block, d) {
+  const key = blockKey(page, block);
+  const opened = { ...pageState.tree[key] };
+  const initial = d.depth < block.tree.open;
+  const open = !(d.key in opened ? opened[d.key] : initial);
+  if (open === initial) delete opened[d.key];
+  else opened[d.key] = open;
+  if (Object.keys(opened).length) pageState.tree[key] = opened;
+  else delete pageState.tree[key];
+  savePagePrefs();
+  renderListRows(page, block);
 }
 
 function renderListRows(page, block) {
@@ -693,41 +786,69 @@ function renderListRows(page, block) {
   const cols = listColumns(block, rows);
   const filter = (pageState.search[key] || '').toLowerCase();
   const sort = sortOf(page, block);
-  const matched = filter ? rows.filter(r => cols.some(c => cellText(r[c.key]).toLowerCase().includes(filter))) : rows;
-  const shown = listShown[key] = sortRows(matched, sort, cols.find(c => c.key === sort?.key)?.format);
+  const format = cols.find(c => c.key === sort?.key)?.format;
+  const matched = filter ? rows.filter(r => rowTexts(block, cols, r).some(t => t.toLowerCase().includes(filter))) : rows;
+  // What's drawn, top to bottom: rows ({row, depth}) and, in a tree, folders ({dir, open}).
+  const items = block.tree
+    ? treeItems(page, block, buildTree(block, matched), { filtering: !!filter, sort, format })
+    : sortRows(matched, sort, format).map(row => ({ row, depth: 0 }));
+  const shown = listShown[key] = items.filter(i => i.row).map(i => i.row);
+  const dirs = new Map(items.filter(i => i.dir).map(i => [i.dir.key, i.dir]));
   const selectable = block.id === page.selection;
   const picked = selectable ? pageState.selected[page.id] : undefined;
-  el.querySelector('[data-count]').textContent = filter ? `${shown.length} / ${rows.length}` : `${rows.length}`;
+  // A closed folder that holds the picked row says so.
+  const pickedIn = block.tree && selectable ? folderKeysOf(block, selectedRow(page)) : new Set();
+  el.querySelector('[data-count]').textContent = filter ? `${matched.length} / ${rows.length}` : `${rows.length}`;
   const actions = block.rowActions;
   const checked = block.check ? checkedKeys(page, block) : null;
   const checking = block.check && pageState.running.has(`${page.id}.${block.id}.check`);
-  const shownChecked = checked ? shown.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
-  const checkAll = checked
-    ? `<th class="lst-check"><input type="checkbox" data-check-all title="check all shown"${shown.length && shownChecked === shown.length ? ' checked' : ''}${checking || !shown.length ? ' disabled' : ''} /></th>` : '';
+  const checkedIn = (rs) => checked ? rs.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
+  const checkBox = (attr, rs) => `<input type="checkbox" ${attr}${rs.length && checkedIn(rs) === rs.length ? ' checked' : ''}`
+    + `${checking || !rs.length ? ' disabled' : ''} />`;
+  const checkAll = checked ? `<th class="lst-check">${checkBox('data-check-all title="check all shown"', matched)}</th>` : '';
+  const treeHead = block.tree ? sortHead({ key: TREE_SORT, label: block.tree.columns.join(' / ') }, sort) : '';
+  const buttons = () => actions.map(a => {
+    const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+    const blocked = blockedByChecks(page, a);
+    const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
+    return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+  }).join('');
+  const rowHtml = ({ row: r, depth }) => {
+    const rk = rowKeyOf(block, r);
+    return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
+      + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
+      + (block.tree ? `<td class="tree-name" style="padding-left: ${treeIndent(depth) + 14}px"><span class="cell">${escapeHtml(treePath(block, r).at(-1))}</span></td>` : '')
+      + cols.map(c => `<td>${cellHtml(r[c.key], c)}</td>`).join('')
+      + (actions.length ? `<td class="row-actions">${buttons()}</td>` : '')
+      + '</tr>';
+  };
+  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}">`
+    + (checked ? `<td class="lst-check">${checkBox('data-check-dir', d.all)}</td>` : '')
+    + `<td class="tree-name" colspan="${cols.length + 1}" style="padding-left: ${treeIndent(d.depth)}px">`
+    + `<span class="tree-caret">${open ? '▾' : '▸'}</span>${escapeHtml(d.name)}<span class="tree-count">${d.all.length}</span></td>`
+    + (actions.length ? '<td class="row-actions"></td>' : '')
+    + '</tr>';
   host.innerHTML = rows.length
-    ? `<table class="lst"><thead><tr>${checkAll}${cols.map(c => sortHead(c, sort)).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
-      + shown.map((r) => {
-        const rk = rowKeyOf(block, r);
-        return `<tr data-row="${escapeHtml(rk ?? '')}"${selectable ? ' class="pick' + (rk === picked ? ' sel' : '') + '"' : ''}>`
-          + (checked ? `<td class="lst-check"><input type="checkbox" data-check${checked.has(rk) ? ' checked' : ''}${checking ? ' disabled' : ''} /></td>` : '')
-          + cols.map(c => `<td>${cellHtml(r[c.key], c)}</td>`).join('')
-          + (actions.length ? `<td class="row-actions">${actions.map(a => {
-            const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
-            const blocked = blockedByChecks(page, a);
-            const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
-            return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
-          }).join('')}</td>` : '')
-          + '</tr>';
-      }).join('') + '</tbody></table>'
+    ? `<table class="lst${block.tree ? ' tree' : ''}"><thead><tr>${checkAll}${treeHead}${cols.map(c => sortHead(c, sort)).join('')}${actions.length ? '<th class="row-actions"></th>' : ''}</tr></thead><tbody>`
+      + items.map(i => i.dir ? dirHtml(i) : rowHtml(i)).join('') + '</tbody></table>'
       + (entry.result.truncated ? `<div class="ext-empty">first ${rows.length} of ${entry.result.truncated} rows</div>` : '')
     : '<div class="ext-empty">no rows</div>';
   const byKey = new Map(shown.map(r => [rowKeyOf(block, r) ?? '', r]));
   host.querySelectorAll('th[data-sort]').forEach(th => { th.onclick = () => cycleSort(page, block, th.dataset.sort); });
   const all = host.querySelector('[data-check-all]');
   if (all) {
-    all.indeterminate = shownChecked > 0 && shownChecked < shown.length;
-    all.onclick = (e) => { e.preventDefault(); setChecked(page, block, shown, shownChecked < shown.length); };
+    all.indeterminate = checkedIn(matched) > 0 && checkedIn(matched) < matched.length;
+    all.onclick = (e) => { e.preventDefault(); setChecked(page, block, matched, checkedIn(matched) < matched.length); };
   }
+  host.querySelectorAll('tr[data-dir]').forEach(tr => {
+    const d = dirs.get(tr.dataset.dir);
+    if (!filter) tr.onclick = () => toggleDir(page, block, d); // a filter keeps every folder above a match open
+    const box = tr.querySelector('[data-check-dir]');
+    if (!box) return;
+    box.indeterminate = checkedIn(d.all) > 0 && checkedIn(d.all) < d.all.length;
+    box.parentElement.onclick = (e) => e.stopPropagation(); // checking a folder doesn't fold it
+    box.onclick = (e) => { e.preventDefault(); setChecked(page, block, d.all, checkedIn(d.all) < d.all.length); };
+  });
   host.querySelectorAll('tr[data-row]').forEach(tr => {
     const row = byKey.get(tr.dataset.row);
     if (selectable) tr.onclick = () => select(page, block, row);

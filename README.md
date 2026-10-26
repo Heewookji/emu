@@ -971,6 +971,16 @@ pages:
   row and fetches the list again. A row action with `bulk: true` also gets a button in the
   list's head that runs it once per checked row, in turn, stopping at the first failure (a
   `confirm: true` one asks once).
+- **Folders.** `tree: path` (or `tree: [env, path]`) draws a list as folders: the values of those
+  columns, each split at `/`, make a row's path — `prod / tpl / home / 4.48.0 / home_banner.txt`. Its
+  last part names the row; the parts before it are folders, with a row count, that a click opens or
+  closes. Rows keep their columns, buttons, pick and checks; a folder's checkbox checks every row
+  below it, and a closed folder holding the picked row is marked. Folders start closed —
+  `tree: {columns: [env, path], open: 1}` opens the first level — and what you open is kept per
+  browser. A filter also matches the path and shows the matching rows with every folder above them
+  open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
+  each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
+  the rows flat, the path columns first.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row, the segment and a clicked sort
   are remembered per browser.

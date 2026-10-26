@@ -196,6 +196,25 @@ void main() {
       ]);
     });
 
+    test('tree: one column, several, or a map with how many levels start open', () {
+      final c = parse([
+        {'list': {'id': 'one', 'run': ['./tool/t'], 'tree': 'path'}},
+        {'list': {'id': 'two', 'run': ['./tool/t'], 'tree': ['env', 'path']}},
+        {'list': {'id': 'map', 'run': ['./tool/t'], 'tree': {'columns': ['env', 'path'], 'open': 1}}},
+        {'list': {'id': 'empty', 'run': ['./tool/t'], 'tree': <String>[]}},
+        {'list': {'id': 'depth', 'run': ['./tool/t'], 'tree': {'columns': 'path', 'open': -1}}},
+        {'list': {'id': 'extra', 'run': ['./tool/t'], 'tree': {'columns': 'path', 'closed': true}}},
+      ]);
+      final page = c.page('p')!;
+      expect((page.block('one') as ListBlock).toJson()['tree'], {'columns': ['path'], 'open': 0});
+      expect((page.block('two') as ListBlock).toJson()['tree'], {'columns': ['env', 'path'], 'open': 0});
+      expect((page.block('map') as ListBlock).toJson()['tree'], {'columns': ['env', 'path'], 'open': 1});
+      expect(c.problems, [
+        for (final id in ['empty', 'depth', 'extra'])
+          'p.$id.tree: expected a column, a list of columns, or {columns: [env, path], open: <depth>}',
+      ]);
+    });
+
     test('fill puts each value inside its own argument', () {
       const cmd = PageCommand.argv(['./tool/t', 'diff', '--name={{selected.name}}', '{{seg}}']);
       final filled = cmd.fill({'selected.name': r'a b; rm -rf ~ $(id)', 'seg': 'prod'});

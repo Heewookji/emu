@@ -74,6 +74,11 @@ pages:
             - action: { id: plan, run: [./tool/t.sh, plan, "{{input.env}}"] }
             - action: { id: echo, run: [./tool/t.sh, args, "{{input.env}}", "{{input.note}}"] }
             - action: { id: push, run: [./tool/t.sh, args, push, "{{input.env}}"], confirm: true }
+      - list:
+          id: files
+          run: [./tool/t.sh, list]
+          key: name
+          tree: [local, name]
 ''';
 
 const _script = r'''#!/bin/sh
@@ -136,6 +141,13 @@ void main() {
       {'name': 'home banner', 'local': true},
       {'name': 'card', 'local': false},
     ]);
+  });
+
+  test('a tree list says which columns make the folders, for emu block', () async {
+    final (_, j) = await call('GET', '/api/pages/tpl/blocks/files');
+    expect(j['ok'], isTrue);
+    expect(j['tree'], ['local', 'name']);
+    expect((await call('GET', '/api/pages/tpl/blocks/items')).$2.containsKey('tree'), isFalse);
   });
 
   test('a list that prints something else says so', () async {

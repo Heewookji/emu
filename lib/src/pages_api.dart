@@ -574,6 +574,8 @@ class PagesApi {
       ...base,
       'rows': rows.length > _rowLimit ? rows.sublist(0, _rowLimit) : rows,
       if (rows.length > _rowLimit) 'truncated': rows.length,
+      // The columns that make each row's folder path (`tree:`), so `emu block` shows them first.
+      if (block is ListBlock && block.tree != null) 'tree': block.tree!.columns,
     };
   }
 
