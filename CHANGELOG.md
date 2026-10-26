@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-26
+
 ### Added
 - 대시보드 페이지 블록 `panel` — 입력 칸 없는 form(버튼 패널). 툴바에 두기 싫은 버튼(배포 등)을 영역 안에 묶는다.
   `form` 도 `fields` 를 빼거나 `[]` 로 둘 수 있고, 그때 버튼의 `{{input.*}}` 는 설정 오류. form·panel 의 `note:` 는
@@ -384,7 +386,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
