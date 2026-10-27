@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+### Added
+- 허브의 업데이트 버튼. 새 릴리스가 있으면 버전 창의 **Update** 가 `emu update --yes` 와 같은 절차(새 버전 받기 →
+  emu 다시 빌드 → macOS 앱 갱신)를 허브 프로세스에서 돌리고, 단계마다 진행 상황과 실패 이유를 보인 뒤 새
+  바이너리로 같은 포트에 허브를 다시 띄운다(새 허브가 안 뜨면 옛 허브가 다시 받는다). 페이지는 스스로 다시 붙고,
+  macOS 앱은 다시 빌드됐으면 스스로 다시 열린다. API `POST /api/update`(본문 없음 — 무엇을 돌릴지는 서버가
+  정함, 동시에 하나, 거절은 409)·`GET /api/update`, 진행은 stream 의 `{type: "update"}`.
+- 허브 버전 창의 "What changed" 를 markdown 으로 렌더링 — 머리글·목록(들여쓴 이어지는 줄)·`code`·굵게·http(s)
+  링크만 태그로 바꾸고 나머지는 모두 escape(원격 CHANGELOG 는 믿지 않음). 길면 스크롤.
+
+### Changed
+- `emu update` 가 Claude Code 플러그인 설치에서도 동작한다: `claude plugin marketplace update` +
+  `claude plugin update` 로 새 버전을 받아 새 캐시 폴더에서 `build.sh` 로 빌드하고, 옛 바이너리를 가리키던 PATH
+  심링크를 rename 으로 옮긴다. `claude` CLI 가 없으면 전처럼 `/plugin update emu` + `/emu-setup` 을 안내한다.
+  `--json` 은 단계를 stderr 로, 결과에 `install`·`binary`·`linked`·`app` 을 더한다. 두 업데이트가 겹치지 않게
+  `~/.emu/update.lock`.
+- `build.sh` 는 임시 파일로 컴파일한 뒤 `emu` 로 rename — 실행 중인 emu(허브)의 파일을 덮어쓰지 않는다.
+- `emu app install --if-changed` 는 앱이 실행하는 emu 바이너리 경로가 바뀌어도 다시 빌드한다.
+
 ## [0.16.0] - 2026-10-27
 
 ### Added

@@ -164,7 +164,7 @@ What this loop gives an agent:
 |---------|-------------|
 | `emu --version` / `-v` | Show the installed version + whether a newer release is available |
 | `emu doctor` | Check dependencies (flutter / adb / emulator / xcrun) + update status |
-| `emu update [-y]` | Pull + rebuild the latest release (only works when `emu` runs from a git checkout, e.g. after `emu-setup`) |
+| `emu update [-y]` | Install the latest release: a git checkout pulls + rebuilds; a Claude Code plugin install runs `claude plugin marketplace update` + `claude plugin update`, builds the new version and moves the PATH symlink to it (no `claude` CLI → prints the `/plugin update emu` + `/emu-setup` steps). Rebuilds the macOS app when installed. `--json` keeps one result object on stdout, steps on stderr |
 | `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary |
 | `emu devices` | `flutter devices` + Android AVD list. Devices held by another emu session are marked `(in use: <project>, <dashboard>)` (`--json`: a `lease` field per device) |
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
@@ -799,7 +799,12 @@ emu report --mine                               # your reports and their status 
   (`emu down`, after a confirm). **Recent projects** start one again (`emu up`
   with its `emu.yaml` defaults). **Devices** shows who holds which device.
   The footer shows the emu version and, when a newer release is out, what
-  changed and the `emu update` command.
+  changed (the CHANGELOG sections, rendered) and an **Update** button: the hub
+  runs the same steps as `emu update --yes` — fetch, rebuild emu and the macOS
+  app, then restart itself on the new binary — showing each step, or why it
+  can't (uncommitted changes in the checkout, no `claude` CLI…). The page
+  reconnects on its own; in the macOS app, the app reopens when it was rebuilt.
+  Sessions keep running; restart them to use the new version.
 - **Main area** — the picked session's own dashboard. The last 3 picked stay
   loaded, so switching back is instant and their log streams keep running.
   `#/s/<id>` in the address picks a session.
@@ -830,7 +835,8 @@ window around the hub:
 
 `emu app status|open|uninstall`. The app keeps the `PATH` of the shell it was
 installed from (Finder gives apps a minimal one), and `emu update` rebuilds it
-when its sources changed.
+when its sources or the emu binary it runs (a plugin update builds one in a new
+folder) changed.
 
 ## Dashboard pages
 
