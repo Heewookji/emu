@@ -1017,10 +1017,51 @@ pages:
   - 도우미 없이도 지금처럼 된다: 데이터는 `{type: "emu:data", …}` 로 오고, `{type: "emu:ready"}` 로 다시
     받으며, `{type: "emu:action", id}` 는 답 없이 액션을 실행한다.
 
+- **실행 중에 묻기** — `interactive: true` 인 액션(툴바·행·form·html 블록 액션)은 명령의 stdin 을 열어
+  두고, 명령이 혼자 정할 수 없는 것을 물을 수 있다: stdout 에 한 줄 `::emu-ask {json}` 을 찍고 한 줄을
+  읽는다.
+
+  ```yaml
+      - action:
+          id: push
+          run: [./tool/push.sh]
+          interactive: true     # ::emu-ask 줄은 출력이 아니라 질문
+          askTimeout: 300       # 질문 하나가 답을 기다리는 초(기본 120)
+  ```
+
+  ```sh
+  printf '::emu-ask %s\n' '{"id":"force","kind":"confirm","title":"남이 바꾼 파일 2개를 덮어쓸까요?","detail":"a.tpl\nb.tpl","danger":true}'
+  read -r answer        # {"id":"force","value":true}
+  ```
+
+  | `kind` | 더 받는 것 | 답의 `value` |
+  |--------|-----------|--------------|
+  | `confirm` | `title, message, detail, danger, button` | `true` / `false` |
+  | `prompt` | `fields: [{name, label, default}]` | `{name: 글자, …}` 또는 `null` |
+  | `choose` | `options: [{value, label} \| 값], multiple` | 고른 값(`multiple` 이면 배열) 또는 `null` |
+
+  - emu 는 그 줄을 출력(실시간 출력·최종 출력·로그)에서 빼고 **실행을 시작한 곳**에서 묻는다: 버튼을 누른
+    대시보드 탭(다른 탭엔 안 뜸), 또는 `emu run` 의 터미널. 창은 커스텀 화면과 같은 대시보드 창 규칙을
+    따른다: 텍스트로만, 머리에 묻는 페이지·액션 이름, 한 번에 한 창(열린 창이 닫힐 때까지 기다림),
+    `danger` 면 포커스는 Cancel. Cancel 은 `false`(confirm) 또는 `null`.
+  - 답할 곳이 없으면 — 터미널 없는 `emu run`(파이프, CI), 탭을 닫음 — 또는 `askTimeout`
+    안에 답이 없으면 `null`. 읽을 수 없는 줄(JSON 이 아님, 모르는 `kind`, 64 KB 초과)도 `null` 로 답하고
+    출력에 `⚠ emu-ask` 경고를 남긴다. `interactive: true` 와 `auto:` 를 함께 쓰면 설정 오류다 — 스스로 도는
+    실행엔 답할 사람이 없다. `EMU_ASK=1` 이면 답할 사람이 있다(아니면 `0`) — 도구는 묻기 전에
+    멈출 수 있다. 「묻지 못하면 멈춘다」로 짜면 emu 없이 돌 때와 같다.
+  - 질문이 답을 기다리는 동안 실행 `timeout:` 은 멈춘다: 명령이 스스로 쓴 시간만 센다(기다린 시간은 실행
+    결과의 `waitedMs`).
+  - 답은 질문에 맞춰 거른다 — confirm 은 bool, prompt 는 그 질문의 칸만, choose 는 그 질문의 항목만 — 질문
+    글자는 길이를 자른다(title 200, message 2000, detail 20000 자). 질문은 명령 실행 권한을 늘리지 않는다:
+    `emu.yaml` 에 적힌 명령이 묻는 것이고, 시작한 곳에만 묻는다.
+  - `interactive: true` 가 없으면 그런 줄은 그냥 출력이고 stdin 은 닫힌다 — 우연히 찍힌 줄로 창이 뜨지
+    않는다. 줄은 `echo` 대신 `printf '%s\n'` 로 찍는다(sh 의 echo 는 JSON 안의 `\n` 을 줄바꿈으로 바꾼다).
+    전체 예제는 [`docs/examples/ask`](docs/examples/ask).
+
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
 - 명령은 프로젝트 루트에서 `EMU_PROJECT`, `EMU_PORT`, 그리고 정해지면 `EMU_DEVICE`, `EMU_PLATFORM`,
-  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다. 같은 항목은 동시에 두 번 돌지 않는다.
+  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다(`interactive: true` 는 빼고). 같은 항목은 동시에 두 번 돌지 않는다.
 - 서버는 설정에 적힌 명령만 실행한다. 요청은 페이지와 항목 id만 보내고 명령은 보내지 않는다.
   `emu.yaml` 은 요청마다 다시 읽으므로 고치면 재시작 없이 반영된다(파일이 바뀌면 열린 대시보드가
   새로 고치고, ↻ 로도 다시 읽는다).
@@ -1040,6 +1081,7 @@ emu run links.link.open --input url=myapp://home   # 입력값과 함께 form �
 emu run deploy.view.plan --input env=stage         # html 블록 자신의 액션, inputs: 의 값과 함께
 emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: check: true list 의 행을 key 로
 emu run tpl.picks.check --row name=home            # check.toggle 은 행 버튼 "check" 로 실행
+emu run templates.push                             # interactive: 터미널이면 여기서 묻고, 파이프면 답은 모두 null
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```

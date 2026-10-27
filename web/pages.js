@@ -113,7 +113,7 @@ function showPage(id) {
   pageEls.debugToolbar.hidden = !debug;
   pageEls.bar.hidden = debug;
   pageEls.body.hidden = debug;
-  if (debug) { showTab(debugTab); return; }
+  if (debug) { pruneFrameRefreshed(null); showTab(debugTab); return; }
   for (const id of ['log', 'changes', 'mocks']) document.getElementById(id).hidden = true;
   renderPageBar(page);
   renderPageBody(page);
@@ -264,7 +264,7 @@ async function runBulk(page, block, a) {
   if (!rows.length || pageState.bulk[key] || pageState.running.has(key)) return;
   const url = `/api/pages/${encodeURIComponent(page.id)}/rows/${encodeURIComponent(block.id)}/${encodeURIComponent(a.id)}`;
   const post = async (row, confirmed) => {
-    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...runValues(page, row), confirmed }) });
+    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...runValues(page, row), confirmed, asker: ASKER }) });
     return [r, await r.json()];
   };
   const progress = (n) => { pageState.bulk[key] = `${n}/${rows.length}`; renderRunning(page); };
@@ -399,7 +399,7 @@ async function runItem(page, item, key, url, body, { frame = null, ask = null, q
   pageState.running.add(key);
   renderRunning(page);
   try {
-    const post = (b) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    const post = (b) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...b, asker: ASKER }) });
     let r = await post(body);
     let j = await r.json();
     if (r.status === 428 && j.needsConfirm) {
@@ -459,6 +459,7 @@ function finishRun(page, item, key, run, quiet) {
 
 // Runs started anywhere (this tab, another tab, `emu run`) show up here too.
 function onPageRun(msg) {
+  if (msg.event === 'ask' || msg.event === 'ask-done') { onRunAsk(msg); return; } // a run started here asks
   const page = pageState.pages.find(p => p.id === msg.page);
   if (!page) return;
   const key = `${msg.page}.${msg.item}`;
@@ -509,6 +510,7 @@ function onPageWatch(msg) {
 // ---- blocks ------------------------------------------------------------------
 
 function renderPageBody(page) {
+  pruneFrameRefreshed(page);
   const areas = { left: [], main: [], bottom: [] };
   for (const b of page.blocks) areas[b.area]?.push(b);
   const body = pageEls.body;
@@ -1488,6 +1490,7 @@ function frameSelect(page, key) {
 // none is named. Not while it loads, nor twice in a second (a view that
 // refreshes from onData would otherwise run its command in a loop).
 const frameRefreshed = {}; // 'page.block' → when a frame last had it fetched
+const FRAME_REFRESH_MS = 1000;
 function frameRefresh(page, block, id) {
   const target = id === undefined || id === null ? block : page.blocks.find(b => b.id === id);
   if (!target || target.kind === 'output' || target.kind === 'form') {
@@ -1495,12 +1498,22 @@ function frameRefresh(page, block, id) {
   }
   const key = blockKey(page, target);
   const now = Date.now();
-  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < 1000) {
+  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < FRAME_REFRESH_MS) {
     return { ok: false, busy: true, error: `${target.title || target.id} is already loading` };
   }
   frameRefreshed[key] = now;
   loadBlocks(page, [target]);
   return { ok: true };
+}
+
+// When [page] is drawn (shown, or drawn again): forget the refreshes of
+// blocks not on it, or no longer on it, and those too old to hold one back.
+function pruneFrameRefreshed(page) {
+  const now = Date.now();
+  const keep = new Set(page ? page.blocks.map(b => blockKey(page, b)) : []);
+  for (const [key, at] of Object.entries(frameRefreshed)) {
+    if (!keep.has(key) || now - at >= FRAME_REFRESH_MS) delete frameRefreshed[key];
+  }
 }
 
 // emu.run(id, {input, confirm}): the block's own action, or a toolbar action
@@ -1730,7 +1743,7 @@ function renderHistory(el, hist, viewing, live) {
 // preview disables Run unless the action allows it.
 
 const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'choices', 'action', 'action-title', 'action-msg',
-  'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
+  'action-detail', 'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
   .map(k => [k, document.getElementById(`confirm-${k}`)]));
 let dialogResolve = null;
 let dialogKeep = null; // openDialog's [keep]: what to hold on to if OK is pressed
@@ -1764,7 +1777,11 @@ function openDialog({ from = '', title, message = '', detail = '', fields = [], 
   }
   renderChoices(choices, danger);
   dlg.action.hidden = !action;
-  if (action) { dlg['action-title'].textContent = action.title; show(dlg['action-msg'], action.message); }
+  if (action) {
+    dlg['action-title'].textContent = action.title;
+    show(dlg['action-msg'], action.message);
+    show(dlg['action-detail'], action.detail);
+  }
   renderConfirmPreview(preview);
   dlg.command.hidden = !command;
   dlg.cmd.textContent = dlg['cmd-line'].textContent = command ? `$ ${command}` : '';
@@ -1833,7 +1850,10 @@ function closeDialog(answer) {
   dialogKeep = null;
   resolve(answer);
 }
-function hideDialog() { pageEls.confirm.hidden = pageEls.confirmDim.hidden = true; }
+function hideDialog() {
+  pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;
+  setTimeout(nextRunAsk); // a question that waited for this dialog
+}
 dlg.run.onclick = () => closeDialog({
   ok: true,
   values: Object.fromEntries([...dlg.fields.querySelectorAll('input')].map(i => [i.dataset.name, i.value])),
@@ -1863,13 +1883,14 @@ function confirmRun(opts) {
 }
 
 // A run's dialog with the words of the view that asked for it: the view's
-// lead (under its "from" line), emu.yaml's follow with the command.
+// lead (under its "from" line), emu.yaml's follow with the command. Every word
+// of emu.yaml's moves under [action] whole — the view's can't stand in for it.
 function withAsk(opts, ask) {
   return {
     ...opts,
-    title: ask.title, message: ask.message, detail: ask.detail,
-    action: { title: opts.title, message: opts.message },
-    danger: opts.danger || ask.danger,
+    title: ask.title, message: ask.message || '', detail: ask.detail || '',
+    action: { title: opts.title, message: opts.message || '', detail: opts.detail || '' },
+    danger: !!(opts.danger || ask.danger),
   };
 }
 
@@ -1941,6 +1962,72 @@ function refusalText(answer) {
     : answer.blocked || answer.block ? 'requests from this view are blocked'
       : answer.hidden ? 'this view is not on screen'
         : 'cancelled';
+}
+
+// ---- asking while a command runs ----------------------------------------------
+// An `interactive:` action's command may ask (`::emu-ask` lines): the server
+// sends the question to the tab that started the run — this one — and the
+// answer goes back by its ask id. It is a dialog like the others: one at a
+// time (a question waits for an open dialog to close), text only, headed with
+// the page and action that ask, Cancel focused when it is danger. Cancel
+// answers false (confirm) or null; a question the server gave up on
+// (timed out, the command ended) closes unanswered.
+const runAsks = { queue: [], current: null };
+
+function onRunAsk(msg) {
+  if (msg.event === 'ask') {
+    runAsks.queue.push(msg);
+    nextRunAsk();
+  } else {
+    runAsks.queue = runAsks.queue.filter(m => m.askId !== msg.askId);
+    if (runAsks.current === msg.askId) closeDialog({ ok: false, gone: true });
+  }
+}
+
+// The dialog for a run's question: [msg] as the server sent it.
+function runAskOpts(msg) {
+  const q = msg.ask || {};
+  const opts = {
+    from: `“${clip(msg.from?.action ?? msg.item, 100)}” on page “${clip(msg.from?.page ?? msg.page, 100)}” (emu.yaml) asks while it runs:`,
+    title: clip(q.title, 200) || 'Confirm?', message: clip(q.message, 2000), detail: clip(q.detail, 20000),
+    danger: q.danger === true, button: clip(q.button, 40) || 'OK',
+  };
+  if (q.kind === 'prompt') {
+    opts.fields = (Array.isArray(q.fields) ? q.fields : []).slice(0, 12).filter(f => f && typeof f.name === 'string')
+      .map(f => ({ name: f.name, label: clip(f.label ?? f.name, 100), default: clip(f.default, 2000) }));
+  } else if (q.kind === 'choose') {
+    opts.choices = { options: frameOptions(q.options), multiple: q.multiple === true };
+  }
+  return opts;
+}
+
+// The dialog's answer as the command gets it.
+function runAskValue(kind, opts, answer) {
+  if (kind === 'confirm') return answer.ok === true;
+  if (!answer.ok) return null;
+  if (kind === 'prompt') return answer.values;
+  const picked = answer.picked.map(i => opts.choices.options[i].value);
+  return opts.choices.multiple ? picked : picked[0] ?? null;
+}
+
+async function nextRunAsk() {
+  if (runAsks.current || dialogOpen() || !runAsks.queue.length) return;
+  const msg = runAsks.queue.shift();
+  runAsks.current = msg.askId;
+  const opts = runAskOpts(msg);
+  const answer = await openDialog(opts);
+  runAsks.current = null;
+  if (!answer.gone) {
+    try {
+      await api(`/api/pages/${encodeURIComponent(msg.page)}/asks/${encodeURIComponent(msg.askId)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: runAskValue(msg.ask?.kind, opts, answer) }),
+      });
+    } catch (e) {
+      toast(`answer to “${opts.title}” failed: ${e}`);
+    }
+  }
+  nextRunAsk();
 }
 
 function stripAnsi(s) { return (s || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ''); }
