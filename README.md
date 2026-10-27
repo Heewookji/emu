@@ -752,7 +752,14 @@ emu report --mine                               # your reports and their status 
 `emu up` serves a dashboard at `http://127.0.0.1:4577`:
 
 - Live log stream — **regex search**, **level filter** (debug/info/warn/error),
-  match highlighting, copy, clear.
+  match highlighting, copy, clear. `autoscroll` follows new lines while you are at the bottom.
+  `bulk` (on by default) draws the lines that arrive together once per frame, so a burst of
+  thousands of lines lands at once instead of crawling in line by line; off draws each line as it
+  comes. `fold` folds consecutive lines with the same second (as shown), level and source
+  (`app`, `stderr`, `system`, `ext`) into their first line with `▸ N lines` — click it to unfold or
+  fold that run; `expand all` / `collapse all` does every run, and runs that form afterwards
+  follow it. A line that continues the last run joins it, open or folded as it is. While a search
+  is on, every matching line shows, folded or not. `bulk` and `fold` are kept per browser.
 - Buttons: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` keys too).
 - **Interactive screenshot panel** — shows the device screen and drives it directly
   with **click = tap / drag = swipe**. The input box at the bottom types into the
