@@ -30,6 +30,7 @@ import 'project_memory.dart';
 import 'registry.dart';
 import 'report.dart';
 import 'server.dart';
+import 'self_update.dart';
 import 'session.dart';
 import 'temp_device.dart';
 import 'version.dart';
@@ -236,22 +237,15 @@ Future<int> _update(List<String> args) async {
     }
   }
 
-  final self = File(Platform.resolvedExecutable).path;
-  final repo = emuRepoRoot();
-  if (repo == null) {
-    if (self.contains('.claude/plugins/cache/')) {
-      fail('this emu was installed as a Claude Code plugin (no git checkout next to the '
-          'binary), so `emu update` can\'t pull+rebuild it directly. Update the plugin from '
-          'Claude Code (e.g. `/plugin update emu`), then re-run the `/emu-setup` command to '
-          'rebuild the binary and refresh the PATH symlink.');
-    } else {
-      fail('cannot locate the emu source checkout next to the running binary '
-          '(expected the PATH symlink from `emu-setup` to point into a git checkout).');
-    }
+  final updater = SelfUpdater();
+  try {
+    await updater.preflight();
+  } on UpdateError catch (e) {
+    fail(e.message);
     return 1;
   }
 
-  final latest = await latestReleaseVersion();
+  final latest = await updater.latest();
   if (latest == null) {
     fail('could not reach GitHub to check for updates.');
     return 1;
@@ -266,12 +260,6 @@ Future<int> _update(List<String> args) async {
     return 0;
   }
 
-  final dirty = await Process.run('git', ['-C', repo.path, 'status', '--porcelain']);
-  if (dirty.exitCode == 0 && (dirty.stdout as String).trim().isNotEmpty) {
-    fail('refusing to update: uncommitted changes in ${repo.path} — commit or stash first.');
-    return 1;
-  }
-
   if (!yes) {
     if (json) {
       // Don't block on stdin in machine-readable mode — surface the choice instead.
@@ -280,11 +268,12 @@ Future<int> _update(List<String> args) async {
         'updateAvailable': true,
         'current': kEmuVersion,
         'latest': latest,
+        'install': updater.kind.name,
         'hint': 're-run with --yes to apply',
       }));
       return 1;
     }
-    print('update available: v$kEmuVersion → v$latest');
+    print('update available: v$kEmuVersion → v$latest (${updater.kind == InstallKind.plugin ? 'Claude Code plugin' : 'git checkout'})');
     stdout.write('Proceed? [y/N] ');
     final answer = stdin.readLineSync()?.trim().toLowerCase();
     if (answer != 'y' && answer != 'yes') {
@@ -293,31 +282,23 @@ Future<int> _update(List<String> args) async {
     }
   }
 
-  if (!json) print('» git pull');
-  final pull = await Process.run('git', ['-C', repo.path, 'pull', '--ff-only']);
-  if (pull.exitCode != 0) {
-    fail('git pull failed: ${pull.stderr}');
+  final UpdateResult result;
+  try {
+    // --json keeps stdout to the one result object; the steps go to stderr.
+    result = await updater.apply(latest, log: json ? stderr.writeln : print);
+  } on UpdateError catch (e) {
+    fail(e.message);
     return 1;
   }
 
-  if (!json) print('» rebuilding');
-  final build = await Process.run('bash', ['build.sh'], workingDirectory: repo.path);
-  if (build.exitCode != 0) {
-    fail('build failed: ${build.stderr}\n${build.stdout}');
-    return 1;
-  }
-
-  // The macOS app, if installed, is rebuilt by the new binary when its sources changed.
-  if (appBundle().existsSync()) {
-    if (!json) print('» updating the macOS app');
-    final app = await Process.run('${repo.path}/emu', ['app', 'install', '--if-changed']);
-    if (app.exitCode != 0 && !json) print('! could not rebuild the app: ${app.stderr}${app.stdout}');
-  }
-
+  final hub = await runningHub();
   if (json) {
-    print(jsonEncode({'ok': true, 'updated': true, 'from': kEmuVersion, 'to': latest}));
+    print(jsonEncode({...result.toJson(), 'hubRunning': hub != null}));
   } else {
     print('✓ updated to v$latest — restart any running `emu up` session to pick it up.');
+    if (hub != null) print('  the hub still runs v${hub.version ?? kEmuVersion}: `emu hub --stop && emu hub` (or Update in the hub)');
+    if (result.install == InstallKind.plugin) print('  restart Claude Code to load the new emu skills');
+    if (result.app == 'updated' && await appRunning()) print('  the emu app is running — quit it (⌘Q) and open it again');
   }
   return 0;
 }
@@ -2996,7 +2977,7 @@ Future<int> _appCmd(List<String> args) async {
   final installed = bundle.existsSync();
   switch (sub) {
     case 'install':
-      if (args.contains('--if-changed') && (!installed || installedAppRev() == appSourcesRev())) {
+      if (args.contains('--if-changed') && (!installed || await appIsCurrent())) {
         if (json) print(jsonEncode({'ok': true, 'skipped': true}));
         return 0;
       }
@@ -3051,10 +3032,13 @@ Future<int> _appCmd(List<String> args) async {
   }
 }
 
-/// The hidden `__hub` subcommand: run the hub until shut down.
+/// The hidden `__hub [--port N]` subcommand: run the hub until shut down.
+/// `--port`: the port a hub that replaces itself after an update had.
 Future<int> runHub(List<String> args) async {
   final hub = HubServer();
-  await hub.start();
+  final i = args.indexOf('--port');
+  final port = i >= 0 && i + 1 < args.length ? int.tryParse(args[i + 1]) : null;
+  await hub.start(port: port ?? hubDefaultPort);
   final done = Completer<void>();
   for (final sig in [ProcessSignal.sigint, ProcessSignal.sigterm]) {
     sig.watch().listen((_) async {
