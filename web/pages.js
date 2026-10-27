@@ -245,7 +245,8 @@ async function setChecked(page, block, rows, on) {
     for (const r of change) on ? keys.add(rowKeyOf(block, r)) : keys.delete(rowKeyOf(block, r));
     pageState.checked[blockKey(page, block)] = [...keys];
     savePagePrefs();
-    renderRunning(page); // counts, and buttons that need a checked row
+    renderListRows(page, block); // its boxes, and what their clicks read as checked
+    renderRunning(page); // buttons that need a checked row
     return;
   }
   const toggle = { id: 'check', label: 'check', command: block.check.toggle, then: 'none' };
@@ -765,8 +766,10 @@ async function loadBlock(page, block, after = []) {
   const prev = pageState.data[key];
   const pick = usesSelection(block) ? pageState.selected[page.id] : undefined;
   const seg = block.kind === 'diff' && block.segments.length ? segOf(page, block) : undefined;
-  const again = !!prev?.result && prev.pick === pick && prev.seg === seg;
-  const entry = pageState.data[key] = { ...prev, loading: true, quiet: again, query, pick, seg };
+  // pick and seg are those of the answer on screen; they change with the next answer. A fetch that
+  // shows as loading isn't taken over quietly: its dimming would stay if the new answer is the same.
+  const again = !!prev?.result && !dimmed(prev) && prev.pick === pick && prev.seg === seg;
+  const entry = pageState.data[key] = { ...prev, loading: true, quiet: again, query };
   if (!again) renderBlockData(page, block);
   let result;
   try {
@@ -784,6 +787,10 @@ async function loadBlock(page, block, after = []) {
   }
   // A frame hears of every fetch (onData after each run), the same answer or not.
   if (!again || block.kind === 'html' || !sameResult(prev.result, result)) renderBlockData(page, block);
+  else if (block.kind === 'diff' && currentPage() === page) {
+    const el = blockEl(block);
+    if (el) renderSegments(page, block, el); // `hide:` may follow another value of the picked row
+  }
   if (block.check) renderRunning(page); // buttons that need a checked row
   if (block.id !== page.selection) return;
   renderPageBar(page); // buttons that need a pick
