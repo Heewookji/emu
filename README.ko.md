@@ -156,7 +156,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 |------|------|
 | `emu --version` / `-v` | 설치된 버전 표시 + 최신 릴리스 존재 여부 확인 |
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
-| `emu update [-y]` | 최신 릴리스를 pull + 재빌드 (`emu`가 git 체크아웃에서 실행 중일 때만 동작 — 예: `emu-setup` 이후) |
+| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 `claude plugin marketplace update` + `claude plugin update` 로 새 버전을 받아 빌드하고 PATH 심링크를 옮긴다(`claude` CLI 가 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
 | `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
 | `emu devices` | `flutter devices` + Android AVD 목록. 다른 emu 세션이 점유한 기기는 `(in use: <project>, <dashboard>)` 로 표시(`--json` 은 기기별 `lease` 필드) |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
@@ -737,7 +737,10 @@ emu report --mine                               # 내가 보낸 리포트와 상
   `mock`, 옛 emu 로 띄운 세션이면 버전 배지). `⋮` 메뉴: 새 창으로 열기·프로젝트 경로 복사·Finder 에서 보기·
   hot reload/restart·종료(확인 후 `emu down`). **Recent projects** 에서 다시 시작(그 프로젝트 `emu.yaml`
   기본값으로 `emu up`), **Devices** 에서 누가 어떤 기기를 잡고 있는지. 맨 아래에 emu 버전, 새 릴리스가 있으면
-  바뀐 것과 `emu update` 명령.
+  바뀐 것(CHANGELOG 절을 렌더링해서)과 **Update** 버튼: 허브가 `emu update --yes` 와 같은 절차로 받고·emu 와
+  macOS 앱을 다시 빌드하고·새 바이너리로 스스로 다시 뜨며, 단계마다 진행 상황이나 못 하는 이유(체크아웃에 커밋
+  안 된 변경, `claude` CLI 없음…)를 보인다. 페이지는 스스로 다시 붙고, macOS 앱은 다시 빌드됐으면 다시 열린다.
+  세션은 그대로 — 새 버전을 쓰려면 세션을 다시 띄운다.
 - **본문** — 고른 세션의 대시보드 그대로. 최근 고른 3개는 띄워 둔 채라 다시 고르면 바로 보이고 로그 스트림도
   끊기지 않는다. 주소의 `#/s/<id>` 로 세션을 고른다.
 
@@ -759,7 +762,8 @@ emu report --mine                               # 내가 보낸 리포트와 상
   기본 브라우저로.
 
 `emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
-`emu update` 가 앱 소스가 바뀌었으면 다시 빌드한다.
+`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리(플러그인 업데이트는 새 폴더에 빌드)가 바뀌었으면 다시
+빌드한다.
 
 ## 대시보드 페이지
 
