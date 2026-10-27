@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-27
+
 ### Changed
 - 대시보드 Logs 툴바를 좁은 폭에서도 한 줄에 들어가게 정리. 레벨 필터는 버튼 줄 대신 드롭다운(현재 값 표시),
   `autoscroll`·`bulk`·`fold`·`expand all`/`collapse all`·`clear`·`copy` 는 `⋯` 더보기 메뉴로(허브 행 메뉴와 같은
@@ -465,7 +467,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/HuanSuh/emu/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
