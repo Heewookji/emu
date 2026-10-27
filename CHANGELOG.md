@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-27
+
 ### Added
 - 대시보드 Logs 탭 `fold` — 시간(보이는 초)·레벨·소스가 같은 연속된 줄을 첫 줄 + `▸ N lines` 로 접는다. 눌러
   묶음 하나를, `expand all`/`collapse all` 로 전부(그 뒤 생기는 묶음도) 펴고 접는다. 직전 묶음을 잇는 새 줄은
@@ -456,7 +458,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
