@@ -232,6 +232,8 @@ class PageAction extends ToolbarItem {
     this.needsChecked,
     this.bulk = false,
     this.auto,
+    this.interactive = false,
+    this.askTimeout = defaultAskTimeout,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -254,6 +256,15 @@ class PageAction extends ToolbarItem {
   /// it is switched on. Toolbar actions only, with nothing to fill or ask.
   final AutoRun? auto;
 
+  /// `interactive: true` — the command may ask while it runs: a stdout line
+  /// `::emu-ask {…}` is taken out of the output and asked (in the dashboard
+  /// tab that started it, or the terminal of `emu run`), and the answer goes
+  /// to its stdin as one line of JSON. Without it such a line is plain output.
+  final bool interactive;
+
+  /// How long one question waits for an answer before it is answered null.
+  final Duration askTimeout;
+
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
 
@@ -274,6 +285,7 @@ class PageAction extends ToolbarItem {
         'needsChecked': ?needsChecked,
         if (bulk) 'bulk': true,
         'auto': ?auto?.toJson(),
+        if (interactive) 'interactive': true,
       };
 }
 
@@ -324,6 +336,9 @@ class PageToggle extends ToolbarItem {
 }
 
 const defaultTimeout = Duration(seconds: 60);
+
+/// How long an `interactive:` action's question waits for an answer (`askTimeout:`).
+const defaultAskTimeout = Duration(seconds: 120);
 
 /// Where a block sits: a column on the left, the main area, or under it.
 const blockAreas = {'left', 'main', 'bottom'};
@@ -917,6 +932,21 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
     auto = _parseAuto(m['auto'], '$where.auto', problems);
     if (auto == null) return null;
   }
+  final interactive = m['interactive'] ?? false;
+  if (interactive is! bool) {
+    problems.add('$where.interactive: expected true or false');
+    return null;
+  }
+  Duration askTimeout = defaultAskTimeout;
+  if (m['askTimeout'] != null) {
+    if (!interactive) {
+      problems.add('$where.askTimeout: applies to an action with interactive: true');
+      return null;
+    }
+    final t = _timeout(m['askTimeout'], '$where.askTimeout', problems, name: 'askTimeout');
+    if (t == null) return null;
+    askTimeout = t;
+  }
   String? needsChecked;
   if (m['needs'] != null) {
     final needs = '${m['needs']}';
@@ -938,6 +968,10 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
       problems.add('$where: then doesn\'t apply to openUrl');
       return null;
     }
+    if (interactive) {
+      problems.add('$where: interactive works with run:, not openUrl');
+      return null;
+    }
     final url = m['openUrl'];
     // One argument: whatever fills its placeholders stays part of the URL.
     final openUrl = url is String && url.trim().isNotEmpty ? _command([url], '$where.openUrl', allowed, problems, program: false) : null;
@@ -955,6 +989,11 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
         '${run.placeholders.map((k) => '{{$k}}').join(', ')} with');
     return null;
   }
+  if (auto != null && interactive) {
+    problems.add('$where.auto: an action that runs on its own has no one to answer what it asks — '
+        'its questions would all be answered null; drop interactive or auto');
+    return null;
+  }
   return PageAction(
       id: id,
       label: label,
@@ -964,7 +1003,9 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
       confirm: confirm,
       needsChecked: needsChecked,
       bulk: bulk,
-      auto: auto);
+      auto: auto,
+      interactive: interactive,
+      askTimeout: askTimeout);
 }
 
 /// `auto: {watch: [globs], debounce: <ms>, on: true|false}`.
@@ -1395,11 +1436,11 @@ List<String>? _watch(Object? v, String at, List<String> problems) {
   return globs;
 }
 
-Duration? _timeout(Object? v, String at, List<String> problems) {
+Duration? _timeout(Object? v, String at, List<String> problems, {String name = 'timeout'}) {
   if (v == null) return defaultTimeout;
   final s = v is int ? v : int.tryParse('$v');
   if (s == null || s <= 0) {
-    problems.add('$at: timeout must be a positive number of seconds (got "$v")');
+    problems.add('$at: $name must be a positive number of seconds (got "$v")');
     return null;
   }
   return Duration(seconds: s);

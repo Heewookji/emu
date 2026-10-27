@@ -1113,10 +1113,57 @@ pages:
   - Without the helper: data arrives as `{type: "emu:data", …}`, `{type: "emu:ready"}` asks for it
     again, and `{type: "emu:action", id}` runs an action with no answer — as before.
 
+- **Asking while it runs** — an action with `interactive: true` (toolbar, row, form or html
+  block action) keeps its command's stdin open, and the command may ask what it can't decide
+  alone: it prints one stdout line `::emu-ask {json}` and reads one line back.
+
+  ```yaml
+      - action:
+          id: push
+          run: [./tool/push.sh]
+          interactive: true     # ::emu-ask lines are asked, not printed
+          askTimeout: 300       # seconds one question waits (default 120)
+  ```
+
+  ```sh
+  printf '::emu-ask %s\n' '{"id":"force","kind":"confirm","title":"Overwrite 2 files?","detail":"a.tpl\nb.tpl","danger":true}'
+  read -r answer        # {"id":"force","value":true}
+  ```
+
+  | `kind` | also takes | `value` of the answer |
+  |--------|-----------|-----------------------|
+  | `confirm` | `title, message, detail, danger, button` | `true` / `false` |
+  | `prompt` | `fields: [{name, label, default}]` | `{name: text, …}` or `null` |
+  | `choose` | `options: [{value, label} \| value], multiple` | the value (`multiple`: an array) or `null` |
+
+  - emu takes the line out of the output (live, final and the log) and asks **where the run
+    started**: the dashboard tab that pressed it — no other tab — or the terminal of `emu run`.
+    The dialog is the dashboard's own, as for custom views: text only, headed with the page and
+    action that ask, one at a time (a question waits for an open dialog), Cancel focused when
+    `danger`. Cancel answers `false` (confirm) or `null`.
+  - The answer is `null` when no one can answer — `emu run` without a terminal (a pipe, CI),
+    the tab closed — or no answer came in `askTimeout`; a line emu can't read (not
+    JSON, an unknown `kind`, over 64 KB) is answered `null` too, with a `⚠ emu-ask` note in the
+    output. `interactive: true` with `auto:` is a config error: a run that starts on its own has
+    no one to answer. `EMU_ASK=1` tells the command someone may answer (`0` otherwise), so a tool can stop
+    up front rather than ask into the void. Write tools as "can't ask → stop", the way they work
+    without emu.
+  - The run's `timeout:` stands still while a question waits: what counts is the command's own
+    time (`waitedMs` in the run says how long it waited).
+  - Answers are checked against the question — a confirm's bool, a prompt's own fields, a
+    choose's own options — and the question's text is cut to size (title 200, message 2000,
+    detail 20000 characters). A question can't do anything the action's command couldn't:
+    it is the command from `emu.yaml` asking, and it asks only who started it.
+  - Without `interactive: true` such a line is plain output and stdin is closed, so a stray line
+    never opens a dialog. Print the line with `printf '%s\n'`, not `echo` (sh's echo turns
+    `\n` in the JSON into a line break). Full example:
+    [`docs/examples/ask`](docs/examples/ask).
+
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
 - Commands run in the project root with `EMU_PROJECT`, `EMU_PORT` and, once known,
-  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed.
+  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed
+  (but for `interactive: true`).
   An item never runs twice at once.
 - The server runs only commands written in the config: a request names a page and an item,
   never a command. `emu.yaml` is read again on every request, so edits apply without a
@@ -1138,6 +1185,7 @@ emu run links.link.open --input url=myapp://home   # a form button with what's t
 emu run deploy.view.plan --input env=stage         # an html block's own action, with its inputs:
 emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: rows of the check: true list, by key
 emu run tpl.picks.check --row name=home            # check.toggle runs as the row action "check"
+emu run templates.push                             # interactive: asks here on a terminal; piped, every answer is null
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```
