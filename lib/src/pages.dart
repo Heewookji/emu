@@ -123,10 +123,15 @@ final _plainArg = RegExp(r'^[A-Za-z0-9_@%+=:,./-]+$');
 /// [s] quoted for `sh` when it needs to be.
 String shellQuote(String s) => _plainArg.hasMatch(s) ? s : "'${s.replaceAll("'", r"'\''")}'";
 
+final _globs = <String, RegExp>{};
+
 /// A `watch:` glob, relative to the project root, as a RegExp over the
 /// project-relative path of a changed file: `**` spans directories (`**/`
-/// also none), `*` and `?` stay within one.
-RegExp globToRegExp(String glob) {
+/// also none), `*` and `?` stay within one. Compiled once per glob — a save
+/// burst checks every changed path against every glob.
+RegExp globToRegExp(String glob) => _globs.putIfAbsent(glob, () => _compileGlob(glob));
+
+RegExp _compileGlob(String glob) {
   final g = glob.startsWith('./') ? glob.substring(2) : glob;
   final sb = StringBuffer('^');
   for (var i = 0; i < g.length; i++) {

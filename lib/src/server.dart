@@ -1167,14 +1167,15 @@ class EmuServer {
     _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
       final paths = _pageWatchPaths.toList();
       _pageWatchPaths.clear();
-      final hits = pages.watching(paths);
+      final config = pages.load();
+      final hits = pages.watching(paths, config: config);
       if (hits.isNotEmpty) {
         _broadcast({
           'type': 'ext-watch',
           'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
         });
       }
-      pages.filesChanged(paths);
+      pages.filesChanged(paths, config: config);
     });
   }
 

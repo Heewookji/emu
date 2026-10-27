@@ -2198,7 +2198,13 @@ Future<int> _pagesCmd(List<String> args) async {
           : check['toggle'] == null
               ? '   (check)'
               : '   (check: ${check['column']} · toggle: ${check['toggle']})';
-      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+      final tree = b['tree'] as Map?, sort = b['sort'] as Map?;
+      final order = [
+        if (tree != null) 'tree: ${(tree['columns'] as List).join(' / ')}${tree['open'] == 0 ? '' : ', ${tree['open']} open'}',
+        if (sort != null) 'sort: ${sort['key']} ${sort['dir']}',
+      ];
+      print(('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+              '${order.isEmpty ? '' : '   (${order.join(', ')})'}')
           .trimRight());
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
         print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
