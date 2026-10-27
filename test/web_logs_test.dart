@@ -102,4 +102,51 @@ const rows = (html) => [...html.matchAll(/<div class="row (\\w+)([^"]*)"[^>]*>.*
       });
     });
   });
+
+  group('Logs replay', skip: _node ? false : 'node is not installed', () {
+    final prelude = '''
+const MAX_ROWS = 5000;
+const REPLAY = 500;
+const state = { bulk: true, lastSeq: 0, entries: [] };
+let pending = [];
+let flushFrame = 0;
+let renders = 0;
+const requestAnimationFrame = () => 1;
+const flush = () => {};
+const render = () => { renders++; };
+${['replayStart', 'receive'].map((n) => _fn(src, n)).join('\n')}
+// One socket: its first line goes through replayStart, as connect() does.
+const socket = (seqs) => seqs.forEach((seq, i) => { if (i === 0) replayStart(seq); receive({ seq, text: 'l' + seq }); });
+const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+''';
+
+    test('a reconnect drops the replayed lines this tab already has', () async {
+      final r = await _js(prelude, '''
+        socket(range(1, 700));
+        socket(range(201, 703)); // the server's last 500 lines, then three new ones
+        return { seqs: pending.map((e) => e.seq).slice(-4), n: pending.length, lastSeq: state.lastSeq, renders };
+      ''');
+      expect(r, {
+        'seqs': [700, 701, 702, 703],
+        'n': 703,
+        'lastSeq': 703,
+        'renders': 0,
+      });
+    });
+
+    test('a socket that starts further back than a replay is a new stream: start over', () async {
+      final r = await _js(prelude, '''
+        socket(range(1, 700));
+        state.entries = pending.slice();
+        socket(range(1, 3)); // a new server counts from 1 again
+        return { seqs: pending.map((e) => e.seq), entries: state.entries.length, lastSeq: state.lastSeq, renders };
+      ''');
+      expect(r, {
+        'seqs': [1, 2, 3],
+        'entries': 0,
+        'lastSeq': 3,
+        'renders': 1,
+      });
+    });
+  });
 }

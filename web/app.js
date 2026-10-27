@@ -15,6 +15,7 @@ const state = {
   fold: false,        // fold runs of lines with the same second, level and source
   foldOpenAll: false, // what a run opens as: the last expand all / collapse all
   shown: 0,           // entries that pass the filter — the count, kept as lines come
+  lastSeq: 0,         // the newest line this tab has taken
   shotLoaded: false,  // first screenshot of the current `running` session fetched
   lastRunState: null, // previous app state, to spot the edge into `starting`
 };
@@ -231,7 +232,7 @@ function trimRows() {
     const run = folds.get(Number(first.dataset.g));
     first.classList.remove('cont', 'shut');
     first.classList.add('head');
-    first.insertAdjacentHTML('beforeend', '<span class="fold" title="Fold or unfold this run"></span>');
+    first.insertAdjacentHTML('beforeend', '<span class="fold" title="Fold or unfold this run" hidden></span>');
     if (run) { run.head = first; setBadge(run); }
   }
 }
@@ -260,7 +261,22 @@ function render() {
 let pending = [];
 let flushFrame = 0;
 
+// Every socket starts with the server's last REPLAY lines (server.dart), so a
+// reconnect brings lines this tab has: those are dropped by seq. One that
+// starts further back than a replay reaches is another stream (a new server
+// this tab didn't reload for): the log starts over.
+const REPLAY = 500;
+function replayStart(seq) {
+  if (seq >= state.lastSeq - REPLAY) return;
+  state.entries = [];
+  pending = [];
+  state.lastSeq = 0;
+  render();
+}
+
 function receive(e) {
+  if (e.seq <= state.lastSeq) return;
+  state.lastSeq = e.seq;
   pending.push(e);
   // A hidden tab gets no frames: keep the queue to what would be kept anyway.
   if (pending.length > MAX_ROWS * 3) pending.splice(0, pending.length - MAX_ROWS * 2);
@@ -337,9 +353,13 @@ function connect() {
     // the session check reloads the page in that case (see api()).
     api('/api/session').catch(() => {}).finally(() => setTimeout(connect, 1000)); // auto-reconnect
   };
+  let replayed = false; // this socket's first line seen
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.type === 'log') receive(msg.entry);
+    if (msg.type === 'log') {
+      if (!replayed) { replayed = true; replayStart(msg.entry.seq); }
+      receive(msg.entry);
+    }
     else if (msg.type === 'status') setStatus(msg.status);
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI), or asks this tab
@@ -783,6 +803,7 @@ document.getElementById('btn-clear').onclick = () => {
   api('/api/logs/clear', { method: 'POST' });
 };
 document.getElementById('btn-copy').onclick = () => {
+  flush(); // lines still waiting for their frame
   const text = state.entries.filter(matches).map(e => e.text).join('\n');
   navigator.clipboard.writeText(text).then(() => toast('copied'));
 };
