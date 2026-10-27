@@ -142,13 +142,38 @@ class SelfUpdater {
     return null;
   }
 
-  /// What can be checked without changing anything: how emu is installed,
-  /// and whether it can update itself (clean checkout, `claude` CLI).
+  /// What can be checked without changing anything: how emu is installed
+  /// ([checkInstall]), and whether it can update itself now ([checkReady]).
   /// Throws a refusing [UpdateError] when it can't.
   Future<InstallKind> preflight() async {
+    checkInstall();
+    return checkReady();
+  }
+
+  /// A release build, installed in a way this can update. No commands run.
+  InstallKind checkInstall() {
     if (!RegExp(r'^\d+\.\d+\.\d+$').hasMatch(currentVersion)) {
       throw UpdateError('this is a development build (v$currentVersion) — update its checkout yourself.', refused: true);
     }
+    final k = kind;
+    if (k == InstallKind.unknown) throw _unknownInstall();
+    return k;
+  }
+
+  /// What `emu update` asks before it asks the user: the install
+  /// ([checkInstall]), the latest release (null: offline), and — only when
+  /// there is something newer — [checkReady], so an up-to-date checkout with
+  /// local changes is just up to date.
+  Future<({InstallKind install, String? latest, bool newer})> check() async {
+    final install = checkInstall();
+    final latest = await _latestVersion();
+    final newer = latest != null && isNewer(latest, currentVersion);
+    if (newer) await checkReady();
+    return (install: install, latest: latest, newer: newer);
+  }
+
+  /// Whether it can update now: a clean checkout, or the `claude` CLI.
+  Future<InstallKind> checkReady() async {
     switch (kind) {
       case InstallKind.git:
         final dirty = await _run('git', ['-C', _dir.path, 'status', '--porcelain']);
@@ -168,13 +193,15 @@ class SelfUpdater {
         }
         return InstallKind.plugin;
       case InstallKind.unknown:
-        throw UpdateError(
-            'cannot locate the emu source checkout or plugin folder next to the running binary '
-            '(expected the PATH symlink from `emu-setup` to point into a git checkout or the Claude Code '
-            'plugin cache).',
-            refused: true);
+        throw _unknownInstall();
     }
   }
+
+  static UpdateError _unknownInstall() => UpdateError(
+      'cannot locate the emu source checkout or plugin folder next to the running binary '
+      '(expected the PATH symlink from `emu-setup` to point into a git checkout or the Claude Code '
+      'plugin cache).',
+      refused: true);
 
   /// The newest release, or null when GitHub can't be reached.
   Future<String?> latest() => _latestVersion();
@@ -182,10 +209,11 @@ class SelfUpdater {
   /// Update to [latest] (from [this.latest]). [log] gets one line per step.
   Future<UpdateResult> apply(String latest, {void Function(String)? log}) async {
     final say = log ?? (_) {};
-    final install = await preflight();
+    final install = checkInstall();
     if (!isNewer(latest, currentVersion)) {
       return UpdateResult(install: install, from: currentVersion, latest: latest, binary: executable);
     }
+    await checkReady();
     _lock();
     try {
       final binary = install == InstallKind.git ? await _updateGit(say) : await _updatePlugin(latest, say);
@@ -225,20 +253,50 @@ class SelfUpdater {
           'the marketplace may not have v$latest yet; try again later.');
     }
     await _build(dir, say);
+    // Only a newer build takes over PATH: never link an older cache folder.
+    final built = await _builtVersion('$dir/emu');
+    if (built == null || !isNewer(built, currentVersion)) {
+      throw UpdateError('the build in $dir is v${built ?? '?'}, not newer than v$currentVersion — '
+          'PATH still points at the old one.');
+    }
     return '$dir/emu';
   }
 
-  /// The install folder Claude Code recorded for [id] (`emu@emu`).
+  /// The version a built binary reports (`emu version --json`).
+  Future<String?> _builtVersion(String binary) async {
+    try {
+      final r = await _run(binary, ['version', '--json']);
+      final v = (jsonDecode('${r.stdout}'.trim().split('\n').last) as Map)['version'] as String?;
+      return v != null && RegExp(r'^\d+\.\d+\.\d+$').hasMatch(v) ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The install folder Claude Code recorded for [id] (`emu@emu`): of the
+  /// entries whose folder exists, the user-scope one with the highest
+  /// version (any scope when there is no user one). Old cache folders stay
+  /// on disk, and a project scope may pin an older version.
   static String? installPath(String pluginsDir, String id) {
     try {
       final m = jsonDecode(File('$pluginsDir/installed_plugins.json').readAsStringSync()) as Map<String, dynamic>;
-      final entries = ((m['plugins'] ?? m) as Map<String, dynamic>)[id] as List?;
-      for (final e in entries ?? const []) {
-        final path = (e as Map)['installPath'] as String?;
-        if (path != null && Directory(path).existsSync()) return path;
+      final entries = [
+        for (final e in ((m['plugins'] ?? m) as Map<String, dynamic>)[id] as List? ?? const [])
+          if (e is Map && e['installPath'] is String && Directory(e['installPath'] as String).existsSync()) e,
+      ];
+      final user = entries.where((e) => e['scope'] == 'user').toList();
+      final pool = user.isNotEmpty ? user : entries;
+      if (pool.isEmpty) return null;
+      String ver(Map e) {
+        final v = e['version'];
+        return v is String && RegExp(r'^\d+\.\d+\.\d+$').hasMatch(v) ? v : '0.0.0';
       }
-    } catch (_) {}
-    return null;
+
+      pool.sort((a, b) => compareSemver(ver(b), ver(a)));
+      return pool.first['installPath'] as String;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _build(String dir, void Function(String) say) async {
@@ -303,22 +361,35 @@ class SelfUpdater {
     }
   }
 
+  /// Take [lockFile]: only an exclusive create counts. A lock left by a dead
+  /// process is removed and the create tried again; an empty one is being
+  /// taken by someone else right now.
   void _lock() {
     lockFile.parent.createSync(recursive: true);
-    try {
-      lockFile.createSync(exclusive: true);
-    } on FileSystemException {
-      int? holder;
+    for (var attempt = 0; attempt < 3; attempt++) {
       try {
-        holder = int.tryParse(lockFile.readAsStringSync().trim());
+        lockFile.createSync(exclusive: true);
+        lockFile.writeAsStringSync('$pid');
+        return;
       } on FileSystemException {
-        // The holder just finished and removed it: take it.
-      }
-      if (holder != null && holder != pid && _alive(holder)) {
-        throw UpdateError('another emu update is running (pid $holder).', refused: true);
+        String content;
+        try {
+          content = lockFile.readAsStringSync().trim();
+        } on FileSystemException {
+          continue; // the holder just finished: try again
+        }
+        final holder = int.tryParse(content);
+        if (content.isEmpty || (holder != null && holder != pid && _alive(holder))) {
+          throw UpdateError('another emu update is running${holder == null ? '' : ' (pid $holder)'}.', refused: true);
+        }
+        try {
+          lockFile.deleteSync(); // stale
+        } on FileSystemException {
+          // Someone else removed it first.
+        }
       }
     }
-    lockFile.writeAsStringSync('$pid');
+    throw UpdateError('another emu update is running.', refused: true);
   }
 
   void _unlock() {

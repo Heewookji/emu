@@ -318,6 +318,9 @@ class HubServer {
     } on UpdateError catch (e) {
       _update = null;
       return _json({'ok': false, 'error': e.message}, status: 409);
+    } catch (e) {
+      _update = null; // never left "running" by a check that broke
+      return _json({'ok': false, 'error': 'could not check for an update: $e'}, status: 500);
     }
     _update = {..._update!, 'to': latest, 'install': up.kind.name};
     _pushUpdate();

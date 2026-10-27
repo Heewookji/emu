@@ -58,6 +58,14 @@ void main() {
     final quoted = renderChangelogHtml('[x](https://a.b/"onmouseover="alert(1))');
     expect(quoted, isNot(contains('"onmouseover')));
     expect(quoted, contains('&quot;onmouseover=&quot;'));
+    // `**` in a URL, or bold crossing a link, cannot split the tag.
+    expect(renderChangelogHtml('[x](https://a.b/**y**)'),
+        '<p><a href="https://a.b/**y**" target="_blank" rel="noopener noreferrer">x</a></p>');
+    expect(renderChangelogHtml('**a [b](https://a.b/c) c** and [**d**](https://e.f)'),
+        '<p><strong>a <a href="https://a.b/c" target="_blank" rel="noopener noreferrer">b</a> c</strong> and '
+        '<a href="https://e.f" target="_blank" rel="noopener noreferrer"><strong>d</strong></a></p>');
+    expect(renderChangelogHtml('**a [b**](https://a.b/c)'),
+        '<p>**a <a href="https://a.b/c" target="_blank" rel="noopener noreferrer">b**</a></p>');
     expect(renderChangelogHtml('[`x`](https://a.b)'),
         '<p><a href="https://a.b" target="_blank" rel="noopener noreferrer"><code>x</code></a></p>');
   });

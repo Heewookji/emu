@@ -106,6 +106,8 @@ $ emu ls
       **Update** 버튼을 보여 준다. 버튼은 `POST /api/update` — 서버가 `emu update --yes` 와 같은 절차
       (`lib/src/self_update.dart`)를 돌리고 stream 으로 단계를 보낸 뒤, 소켓을 닫고 새 바이너리로 같은 포트에
       `__hub --port` 를 띄워 답하면 종료한다(안 뜨면 다시 받는다). 페이지는 재연결 때 새 토큰으로 401 → 다시 읽기.
+      macOS 앱 다시 빌드가 실패해도 emu 자체 업데이트는 성공으로 친다 — `emu update --json` 은 `ok: true`,
+      `app: "failed: <이유>"`, exit 0 이고 허브는 새 바이너리로 다시 뜬다. 앱은 `emu app install` 로 따로 다시 빌드한다.
     - 세션의 `emuVersion` 이 허브와 다르면 그 세션 줄에 `v0.12.0` 흐린 배지(다시 띄우면 새 버전).
 - **본문(오른쪽)**: 고른 세션의 대시보드 `http://127.0.0.1:<port>/` 를 iframe 으로 보인다. 지금 대시보드를 그대로
   쓰므로 UI 를 두 벌로 만들지 않는다.

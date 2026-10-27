@@ -38,7 +38,7 @@ String renderChangelogHtml(String markdown) {
     para.clear();
   }
 
-  for (final raw in markdown.replaceAll('\u0000', '').replaceAll('\r\n', '\n').split('\n')) {
+  for (final raw in markdown.replaceAll(RegExp('[\u0000\u0001]'), '').replaceAll('\r\n', '\n').split('\n')) {
     final line = raw.replaceAll('\t', '    ');
     if (fence != null) {
       if (line.trimLeft().startsWith('```')) {
@@ -109,12 +109,18 @@ String _inline(String text) {
     return '\u0000${codes.length - 1}\u0000';
   });
   s = escapeHtml(s);
+  // Links next, also set aside as whole tags: a `**` in a URL, or bold that
+  // starts outside a link and ends inside it, can't split a tag.
+  final links = <String>[];
   s = s.replaceAllMapped(RegExp(r'\[([^\]]+)\]\(([^)\s]+)\)'), (m) {
     final href = m[2]!;
     // Escaped already, so it can't leave the attribute; only web links.
     if (!RegExp(r'^https?://', caseSensitive: false).hasMatch(href) || href.contains('\u0000')) return m[1]!;
-    return '<a href="$href" target="_blank" rel="noopener noreferrer">${m[1]}</a>';
+    final text = m[1]!.replaceAllMapped(RegExp(r'\*\*(.+?)\*\*'), (b) => '<strong>${b[1]}</strong>');
+    links.add('<a href="$href" target="_blank" rel="noopener noreferrer">$text</a>');
+    return '\u0001${links.length - 1}\u0001';
   });
   s = s.replaceAllMapped(RegExp(r'\*\*(.+?)\*\*'), (m) => '<strong>${m[1]}</strong>');
+  s = s.replaceAllMapped(RegExp('\u0001(\\d+)\u0001'), (m) => links[int.parse(m[1]!)]);
   return s.replaceAllMapped(RegExp('\u0000(\\d+)\u0000'), (m) => codes[int.parse(m[1]!)]);
 }

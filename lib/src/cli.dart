@@ -224,7 +224,11 @@ Future<int> _doctor(List<String> args) async {
 // update
 // --------------------------------------------------------------------------
 Future<int> _update(List<String> args) async {
-  final bad = _checkArgs(args, 'usage: emu update [-y, --yes] [--json]', flags: const {'--yes', '-y'});
+  const usage = 'usage: emu update [-y, --yes] [--json]\n'
+      '   git checkout: git pull + build.sh. Claude Code plugin: claude plugin update, build the\n'
+      '   new version, move the PATH symlink. Then the macOS app, if installed — a failed app build\n'
+      '   still counts as updated (--json: ok true, app "failed: …", exit 0; rerun `emu app install`).';
+  final bad = _checkArgs(args, usage, flags: const {'--yes', '-y'});
   if (bad != null) return bad;
   final json = args.contains('--json');
   final yes = args.contains('--yes') || args.contains('-y');
@@ -238,20 +242,23 @@ Future<int> _update(List<String> args) async {
   }
 
   final updater = SelfUpdater();
+  // How emu is installed first; a dirty checkout or a missing `claude` CLI
+  // matters only when there is something newer.
+  final ({InstallKind install, String? latest, bool newer}) checked;
   try {
-    await updater.preflight();
+    checked = await updater.check();
   } on UpdateError catch (e) {
     fail(e.message);
     return 1;
   }
 
-  final latest = await updater.latest();
+  final latest = checked.latest;
   if (latest == null) {
     fail('could not reach GitHub to check for updates.');
     return 1;
   }
 
-  if (!isNewer(latest, kEmuVersion)) {
+  if (!checked.newer) {
     if (json) {
       print(jsonEncode({'ok': true, 'updated': false, 'current': kEmuVersion, 'latest': latest}));
     } else {

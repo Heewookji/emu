@@ -154,7 +154,9 @@ final class HubWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegat
     // ---- bridge (hub page → app) ------------------------------------------------
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        // Only the page itself: a dashboard framed inside the hub page must not drive the app.
+        guard message.frameInfo.isMainFrame,
+              let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "open-window":
             if let s = body["url"] as? String, let url = URL(string: s), allowed(url) { onOpenWindow?(url) }

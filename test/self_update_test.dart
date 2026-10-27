@@ -92,11 +92,26 @@ void main() {
           throwsA(isA<UpdateError>().having((e) => e.message, 'message', allOf(contains('build failed'), contains('boom')))));
     });
 
-    test('up to date: nothing runs but the check', () async {
+    test('up to date: nothing runs', () async {
       final r = await updater('$repo/emu', current: '0.2.0').apply('0.2.0');
       expect(r.updated, isFalse);
       expect(r.toJson(), containsPair('current', '0.2.0'));
-      expect(cmds.calls, ['git -C $repo status --porcelain']);
+      expect(cmds.calls, isEmpty);
+    });
+
+    test('check: local changes matter only when there is something newer', () async {
+      cmds.answers['git -C'] = ProcessResult(0, 0, ' M lib/x.dart\n', '');
+      // Up to date with uncommitted changes: just up to date (as `emu update` always said).
+      final same = await updater('$repo/emu', current: '0.2.0').check();
+      expect(same.newer, isFalse);
+      expect(same.latest, '0.2.0');
+      expect(same.install, InstallKind.git);
+      expect(cmds.calls, isEmpty);
+      expect((await updater('$repo/emu', current: '0.2.0').apply('0.2.0')).updated, isFalse);
+      // Something newer: refused, with the reason.
+      await expectLater(updater('$repo/emu').check(), throwsA(isA<UpdateError>()
+          .having((e) => e.refused, 'refused', isTrue)
+          .having((e) => e.message, 'message', contains('uncommitted changes'))));
     });
 
     test('the macOS app is rebuilt by the new binary when installed', () async {
@@ -118,10 +133,15 @@ void main() {
       lock.writeAsStringSync('${other.pid}');
       await expectLater(updater('$repo/emu').apply('0.2.0'),
           throwsA(isA<UpdateError>().having((e) => e.message, 'message', contains('another emu update'))));
-      // A stale lock (dead pid) is taken over.
+      // An empty lock is being taken by someone else right now.
+      lock.writeAsStringSync('');
+      await expectLater(updater('$repo/emu').apply('0.2.0'),
+          throwsA(isA<UpdateError>().having((e) => e.message, 'message', contains('another emu update'))));
+      // A stale lock (dead pid) is removed and taken.
       lock.writeAsStringSync('999999');
       builds(repo);
       expect((await updater('$repo/emu').apply('0.2.0')).updated, isTrue);
+      expect(lock.existsSync(), isFalse);
     });
   });
 
@@ -165,6 +185,7 @@ void main() {
         }));
       };
       builds('');
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.2.0","latestVersion":"0.2.0"}\n', '');
     }
 
     test('fetches the new version, builds it, and moves the PATH link', () async {
@@ -177,6 +198,7 @@ void main() {
         'claude plugin marketplace update emu',
         'claude plugin update emu@emu',
         'bash build.sh @$newDir',
+        'emu version --json',
       ]);
       expect(r.binary, '$newDir/emu');
       expect(r.linked, ['$bin/emu']);
@@ -194,6 +216,44 @@ void main() {
       final r = await updater('$oldDir/emu', path: '$other:$bin').apply('0.2.0');
       expect(r.linked, ['$bin/emu']);
       expect(Link('$other/emu').targetSync(), '$other/real');
+    });
+
+    test('a build that is not newer never takes over PATH', () async {
+      pluginUpdates();
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.1.0"}\n', '');
+      await expectLater(updater('$oldDir/emu', path: bin).apply('0.2.0'),
+          throwsA(isA<UpdateError>().having((e) => e.message, 'message', contains('not newer'))));
+      expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
+      cmds.answers['emu version --json'] = ProcessResult(0, 1, '', 'crashed');
+      await expectLater(updater('$oldDir/emu', path: bin).apply('0.2.0'), throwsA(isA<UpdateError>()));
+      expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
+    });
+
+    test('installPath: the user scope, highest version, of the folders that exist', () {
+      String dir(String v) {
+        final d = '$plugins/cache/emu/emu/$v';
+        Directory(d).createSync(recursive: true);
+        return d;
+      }
+
+      void record(List<Map<String, Object>> entries) => File('$plugins/installed_plugins.json')
+          .writeAsStringSync(jsonEncode({'plugins': {'emu@emu': entries}}));
+
+      record([
+        {'scope': 'user', 'installPath': dir('0.1.0'), 'version': '0.1.0'},
+        {'scope': 'project', 'installPath': dir('0.9.0'), 'version': '0.9.0'},
+        {'scope': 'user', 'installPath': dir('0.10.0'), 'version': '0.10.0'},
+        {'scope': 'user', 'installPath': '$plugins/cache/emu/emu/0.11.0', 'version': '0.11.0'}, // gone
+      ]);
+      expect(SelfUpdater.installPath(plugins, 'emu@emu'), '$plugins/cache/emu/emu/0.10.0');
+      // No user scope: the highest of the rest.
+      record([
+        {'scope': 'project', 'installPath': dir('0.3.0'), 'version': '0.3.0'},
+        {'scope': 'local', 'installPath': dir('0.4.0'), 'version': '0.4.0'},
+      ]);
+      expect(SelfUpdater.installPath(plugins, 'emu@emu'), '$plugins/cache/emu/emu/0.4.0');
+      record([]);
+      expect(SelfUpdater.installPath(plugins, 'emu@emu'), isNull);
     });
 
     test('without the claude CLI: refused, with the manual steps', () async {

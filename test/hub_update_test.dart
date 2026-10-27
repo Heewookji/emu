@@ -165,6 +165,28 @@ void main() {
     expect(u['error'], contains('new hub did not start'));
   });
 
+  test('a check that breaks answers an error and leaves no update running', () async {
+    final h = HubServer(
+      registry: SessionRegistry(dir: Directory('${tmp.path}/sessions')),
+      recent: RecentProjects(file: File('${tmp.path}/projects.json')),
+      infoFile: File('${tmp.path}/hub3.json'),
+      updater: () => SelfUpdater(
+          executable: '$repo/emu',
+          currentVersion: '0.1.0',
+          run: (exe, args, {workingDirectory}) async => throw const ProcessException('git', [], 'no git'),
+          latestVersion: () async => '0.2.0'),
+    );
+    await h.start(port: 0);
+    addTearDown(h.close);
+    Future<http.Response> click() =>
+        http.post(Uri.parse('http://127.0.0.1:${h.port}/api/update'), headers: {'X-Emu-Token': h.token});
+    final r = await click();
+    expect(r.statusCode, 500);
+    expect((jsonDecode(r.body) as Map)['error'], contains('no git'));
+    final again = await click();
+    expect((jsonDecode(again.body) as Map)['error'], isNot(contains('already running')));
+  });
+
   test('up to date: refused, nothing runs', () async {
     final h = HubServer(
       registry: SessionRegistry(dir: Directory('${tmp.path}/sessions')),
