@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-27
+
 ### Added
 - 대시보드 페이지 선택 list 의 PageUp·PageDown(10행)·Home·End. 트리 폴더 ⌥/Alt-클릭은 그 아래 폴더까지 함께 펴고
   접는다. 실행 중인 output 머리에 지난 초. `emu pages` 가 list 의 `tree`·`sort` 를 보여 준다.
@@ -426,7 +428,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
